@@ -1,4 +1,93 @@
+[English](#english) | [中文](#中文)
+
+---
+
+<a id="english"></a>
+
 # GLM Coding Plan Sniper
+
+Auto-purchase script for Zhipu's GLM Coding Plan — automatically places orders at 10:00 AM daily.
+
+## Why
+
+GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out within seconds. This script automates the entire flow: intercept sold-out status -> click purchase -> confirm order. All you need to do is scan the QR code to pay.
+
+## Features
+
+- **Sold-out Bypass** — Intercepts `soldOut` flags during the purchase window (9:59 ~ 10:05) to enable buttons
+- **Plan Selection** — Defaults to Pro + Quarterly billing (configurable)
+- **Precision Timing** — Auto-clicks the purchase button at 10:00:00 with 100ms retry interval
+- **Auto Confirm** — Automatically clicks confirm/pay buttons in popups
+- **QR Detection** — Plays an alert sound when the payment QR code appears
+- **Overlay UI** — Real-time countdown and log displayed in the top-right corner
+- **Auto Refresh** — Refreshes the page at 9:59:50 to fetch the latest state
+
+## Two Versions
+
+| File | Description |
+|------|-------------|
+| `glm-coding-sniper.user.js` | **Tampermonkey userscript** — runs automatically after installation (recommended) |
+| `glm-coding-sniper-console.js` | **Browser console version** — paste into F12 Console, fallback when Tampermonkey is unavailable |
+
+## Usage
+
+### Tampermonkey (Recommended)
+
+1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension
+2. Enable **Developer Mode** in Chrome (`chrome://extensions`, top-right toggle)
+3. Create a new script in Tampermonkey, paste the contents of `glm-coding-sniper.user.js`, and save
+4. Open https://open.bigmodel.cn/glm-coding around **9:55 AM** and make sure you're logged in
+5. A black overlay in the top-right corner = script is running
+6. **Do not click any buttons manually — let the script handle it**
+7. When you hear the beep, scan the QR code to pay immediately
+
+### Console Version
+
+1. Open the purchase page around **9:59 AM** and log in
+2. Press `F12` -> Console tab
+3. Paste the entire contents of `glm-coding-sniper-console.js` and press Enter
+4. Overlay appears = success (**you'll need to re-paste after any page refresh**)
+
+## Configuration
+
+Edit the `CONFIG` object at the top of the script:
+
+```javascript
+const CONFIG = {
+  targetPlan: 'pro',     // 'lite' | 'pro' | 'max'
+  targetHour: 10,        // target hour
+  targetMinute: 0,       // target minute
+  advanceMs: 200,        // ms to start early (compensate network latency)
+  retryInterval: 100,    // retry interval in ms
+  maxRetries: 50,        // max retry attempts
+};
+```
+
+## Important Notes
+
+- **Buttons stay disabled outside the purchase window** — sold-out interception only activates during 9:59~10:05
+- **Don't open multiple tabs** — one is enough, more tabs cause lag
+- **Have your payment app ready** — QR codes expire quickly
+- **Frontend only** — backend inventory validation is unaffected; if it's truly out of stock, the script can't help
+
+## Alternatives
+
+If you can't get it after multiple days:
+
+- **International version** [z.ai](https://z.ai/subscribe) — no purchase limits, AFF + annual discount brings the price close to domestic
+- **Alibaba Cloud Bailian** — call GLM-5.1 directly on-demand, restocks daily at 9:30 AM
+
+## License
+
+MIT
+
+---
+
+<a id="中文"></a>
+
+[English](#english) | [中文](#中文)
+
+# GLM Coding Plan 自动抢购脚本
 
 智谱 GLM Coding Plan 自动抢购脚本，每天 10:00 自动下单。
 
