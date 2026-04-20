@@ -16,6 +16,7 @@
 
   const CONFIG = {
     targetPlan: 'pro',        // 'lite' | 'pro' | 'max'
+    billingPeriod: 'quarterly', // 'monthly' | 'quarterly' | 'yearly'
     targetHour: 10,
     targetMinute: 0,
     targetSecond: 0,
@@ -105,7 +106,7 @@
       <div style="font-size:16px;font-weight:bold;margin-bottom:6px">
         GLM Sniper <span style="color:#888;font-size:12px">console ver.</span>
       </div>
-      <div style="color:#fc0;margin-bottom:4px">目标: ${CONFIG.targetPlan.toUpperCase()}</div>
+      <div style="color:#fc0;margin-bottom:4px">目标: ${CONFIG.targetPlan.toUpperCase()} / ${{monthly:'包月',quarterly:'包季',yearly:'包年'}[CONFIG.billingPeriod]||'包季'}</div>
       <div id="glm-cd" style="font-size:22px;margin:6px 0;color:#fff">--:--:--</div>
       <div id="glm-st" style="color:#aaa;font-size:12px">就绪</div>
       <div id="glm-log" style="
@@ -167,16 +168,22 @@
 
   // ===== 5. 抢购 =====
   function selectBilling() {
+    const periods = {
+      monthly:   { match: '包月', exclude: ['包季', '包年'], label: '连续包月' },
+      quarterly: { match: '包季', exclude: ['包月', '包年'], label: '连续包季' },
+      yearly:    { match: '包年', exclude: ['包月', '包季'], label: '连续包年' },
+    };
+    const p = periods[CONFIG.billingPeriod] || periods.quarterly;
     for (const el of document.querySelectorAll('div,span,button,a,li,label')) {
       const t = (el.textContent || '').trim();
-      if (t.includes('包季') && !t.includes('包年') && !t.includes('包月') && t.length < 20) {
+      if (t.includes(p.match) && p.exclude.every(ex => !t.includes(ex)) && t.length < 20) {
         el.click();
         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        log('已选择: 连续包季');
+        log('已选择: ' + p.label);
         return;
       }
     }
-    log('未找到包季选项，使用默认');
+    log('未找到' + p.label + '，使用默认');
   }
 
   function startSnipe() {

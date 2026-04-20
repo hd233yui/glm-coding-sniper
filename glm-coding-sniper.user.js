@@ -18,6 +18,8 @@
   const CONFIG = {
     // 目标套餐: 'lite' | 'pro' | 'max'
     targetPlan: 'pro',
+    // 计费周期: 'monthly' | 'quarterly' | 'yearly'
+    billingPeriod: 'quarterly',
     // 抢购时间 (24小时制)
     targetHour: 10,
     targetMinute: 0,
@@ -197,7 +199,7 @@
           GLM Coding Plan Sniper
         </div>
         <div id="glm-target" style="color: #ffcc00; margin-bottom: 4px;">
-          目标: ${CONFIG.targetPlan.toUpperCase()} 套餐
+          目标: ${CONFIG.targetPlan.toUpperCase()} / ${{monthly:'包月',quarterly:'包季',yearly:'包年'}[CONFIG.billingPeriod]||'包季'}
         </div>
         <div id="glm-countdown" style="font-size: 20px; margin: 8px 0; color: #fff;">
           --:--:--
@@ -309,19 +311,24 @@
 
   // ==================== 5. 核心抢购逻辑 ====================
   function selectBillingPeriod() {
-    // 确保选中"连续包季"
+    const periodKeywords = {
+      monthly:   { match: '包月', exclude: ['包季', '包年'], label: '连续包月' },
+      quarterly: { match: '包季', exclude: ['包月', '包年'], label: '连续包季' },
+      yearly:    { match: '包年', exclude: ['包月', '包季'], label: '连续包年' },
+    };
+    const period = periodKeywords[CONFIG.billingPeriod] || periodKeywords.quarterly;
+
     const tabs = document.querySelectorAll('div, span, button, a, li, label');
     for (const tab of tabs) {
       const text = (tab.textContent || '').trim();
-      // 精确匹配包含"包季"但不包含"包年"/"包月"的小元素（避免选中整个页面）
-      if (text.includes('包季') && !text.includes('包年') && !text.includes('包月') && text.length < 20) {
+      if (text.includes(period.match) && period.exclude.every(ex => !text.includes(ex)) && text.length < 20) {
         tab.click();
         tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        log('已选择: 连续包季');
+        log('已选择: ' + period.label);
         return true;
       }
     }
-    log('未找到包季选项，使用页面默认');
+    log('未找到' + period.label + '选项，使用页面默认');
     return false;
   }
 

@@ -54,12 +54,13 @@ Edit the `CONFIG` object at the top of the script:
 
 ```javascript
 const CONFIG = {
-  targetPlan: 'pro',     // 'lite' | 'pro' | 'max'
-  targetHour: 10,        // target hour
-  targetMinute: 0,       // target minute
-  advanceMs: 200,        // ms to start early (compensate network latency)
-  retryInterval: 100,    // retry interval in ms
-  maxRetries: 50,        // max retry attempts
+  targetPlan: 'pro',           // 'lite' | 'pro' | 'max'
+  billingPeriod: 'quarterly',  // 'monthly' | 'quarterly' | 'yearly'
+  targetHour: 10,              // target hour
+  targetMinute: 0,             // target minute
+  advanceMs: 200,              // ms to start early (compensate network latency)
+  retryInterval: 100,          // retry interval in ms
+  maxRetries: 50,              // max retry attempts
 };
 ```
 
@@ -152,12 +153,13 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ```javascript
 const CONFIG = {
-  targetPlan: 'pro',     // 'lite' | 'pro' | 'max'
-  targetHour: 10,        // 抢购小时
-  targetMinute: 0,       // 抢购分钟
-  advanceMs: 200,        // 提前多少ms开始（补偿网络延迟）
-  retryInterval: 100,    // 重试间隔ms
-  maxRetries: 50,        // 最大重试次数
+  targetPlan: 'pro',           // 'lite' | 'pro' | 'max'
+  billingPeriod: 'quarterly',  // 'monthly' | 'quarterly' | 'yearly'
+  targetHour: 10,              // 抢购小时
+  targetMinute: 0,             // 抢购分钟
+  advanceMs: 200,              // 提前多少ms开始（补偿网络延迟）
+  retryInterval: 100,          // 重试间隔ms
+  maxRetries: 50,              // 最大重试次数
 };
 ```
 
