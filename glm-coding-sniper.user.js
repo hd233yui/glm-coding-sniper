@@ -40,6 +40,7 @@
     retryCount: 0,
     isRunning: false,
     orderCreated: false,
+    modalVisible: false,  // 检测到弹窗（验证码/支付）后停止一切刷新
     timerId: null,
     countdownId: null,
   };
@@ -165,7 +166,40 @@
     return _xhrSend.apply(this, args);
   };
 
-  // --- 2c. 错误页面 DOM 抑制：检测到错误渲染时隐藏并触发重新加载数据 ---
+  // --- 2c. 弹窗保护：检测验证码/支付弹窗，一旦出现则冻结所有刷新逻辑 ---
+  function setupModalProtector() {
+    if (!document.body) {
+      setTimeout(setupModalProtector, 200);
+      return;
+    }
+
+    new MutationObserver(() => {
+      // 检测是否有弹窗（验证码、支付二维码等）
+      const modals = document.querySelectorAll(
+        '[class*="modal"],[class*="dialog"],[class*="popup"],[class*="captcha"],[class*="verify"],' +
+        '[class*="slider"],[role="dialog"],[class*="mask"]'
+      );
+      for (const modal of modals) {
+        if (modal.offsetParent !== null && modal.offsetHeight > 30) {
+          if (!state.modalVisible) {
+            state.modalVisible = true;
+            console.log('[GLM Sniper] 检测到弹窗! 冻结所有刷新，保护弹窗');
+            log('检测到弹窗（验证码/支付），已冻结刷新');
+            setStatus('请完成验证码 / 扫码支付!', '#ffcc00');
+            playAlert();
+          }
+          return;
+        }
+      }
+      // 弹窗消失了（用户完成了验证 or 被关闭）
+      if (state.modalVisible) {
+        state.modalVisible = false;
+        console.log('[GLM Sniper] 弹窗已消失，恢复正常');
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  // --- 2d. 错误页面 DOM 抑制：检测到错误渲染时隐藏并触发重新加载数据 ---
   function setupErrorSuppressor() {
     if (!document.body) {
       setTimeout(setupErrorSuppressor, 200);
@@ -174,6 +208,8 @@
 
     new MutationObserver(() => {
       if (!isNearTargetTime()) return;
+      // 有弹窗时不做任何操作，保护验证码/支付弹窗
+      if (state.modalVisible) return;
 
       const bodyText = document.body.textContent || '';
       if (!bodyText.includes('访问人数较多') && !bodyText.includes('请刷新重试') && !bodyText.includes('服务繁忙')) return;
@@ -183,20 +219,16 @@
       for (const node of errorNodes) {
         const t = node.textContent || '';
         if ((t.includes('访问人数较多') || t.includes('请刷新重试')) && node.offsetHeight > 50) {
-          // 不删除节点（避免SPA报错），只是隐藏
           node.style.display = 'none';
           console.log('[GLM Sniper] 隐藏错误页面，触发重新加载...');
 
-          // 通过 SPA 路由重新触发数据加载
           setTimeout(() => {
-            // 方法1: pushState 触发 popstate
             const currentUrl = window.location.href;
             window.history.pushState(null, '', currentUrl);
             window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
           }, 500);
 
           setTimeout(() => {
-            // 方法2: 如果 popstate 没用，用 hashchange
             const hash = window.location.hash;
             window.location.hash = hash + '_retry';
             setTimeout(() => { window.location.hash = hash; }, 100);
@@ -654,6 +686,8 @@
       // 10:00 ~ 10:30 窗口内持续尝试恢复
       const inWindow = h === CONFIG.targetHour && m < 30;
       if (!inWindow) return;
+      // 有弹窗时绝不刷新（保护验证码/支付弹窗）
+      if (state.modalVisible) return;
 
       const bodyText = document.body?.textContent || '';
       const errorKeywords = ['访问人数较多', '请刷新重试', '请稍后再试', '服务繁忙', '网络错误', '加载失败'];
@@ -688,14 +722,41 @@
     setInterval(checkAndRecover, 2000);
   }
 
-  // ==================== 9. 启动 ====================
+  // ==================== 9. 页面恢复后自动触发抢购 ====================
+  function setupAutoSnipeOnReady() {
+    // 每2秒检测：如果在抢购窗口内，页面正常，且还没开始抢购，就自动开始
+    setInterval(() => {
+      const now = new Date();
+      const h = now.getHours(), m = now.getMinutes();
+      if (h !== CONFIG.targetHour || m > 15) return;
+      if (state.isRunning || state.orderCreated || state.modalVisible) return;
+
+      // 检测页面是否有购买按钮（说明页面正常加载了）
+      const bodyText = document.body?.textContent || '';
+      const hasError = ['访问人数较多', '请刷新重试', '服务繁忙'].some(kw => bodyText.includes(kw));
+      if (hasError) return;
+
+      const hasBuyButton = ['购买', '订阅', '订购', '特惠订阅', '特惠购买'].some(kw => bodyText.includes(kw));
+      if (!hasBuyButton) return;
+
+      // 页面正常且有购买按钮，自动触发抢购
+      log('页面恢复正常，自动触发抢购!');
+      setStatus('页面恢复，正在抢购...', '#00ff88');
+      state.isRunning = true;
+      startSnipe();
+    }, 2000);
+  }
+
+  // ==================== 10. 启动 ====================
   function init() {
     // 启动错误恢复
     setupAutoRetryRefresh();   // 全页面级别的强刷兜底
     setupErrorSuppressor();    // DOM级别的错误抑制 + SPA路由重试
+    setupModalProtector();     // 弹窗保护（验证码/支付）
 
     createOverlay();
     setupMutationObserver();
+    setupAutoSnipeOnReady();   // 页面恢复后自动触发抢购
 
     // 延迟校准时间
     setTimeout(calibrateTime, 2000);
@@ -704,6 +765,7 @@
     log(`抢购时间: 每天 ${CONFIG.targetHour}:${String(CONFIG.targetMinute).padStart(2, '0')}:${String(CONFIG.targetSecond).padStart(2, '0')}`);
     log('提前10秒自动刷新，到点自动抢购');
     log('页面加载失败会自动强刷');
+    log('检测到验证码/支付弹窗会冻结刷新');
 
     // 如果当前已经是10:00附近 (比如刚好打开页面)
     const now = new Date();
