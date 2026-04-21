@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.1.0
+// @version      1.2.0
 // @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
 // @author       qiandai
 // @match        https://open.bigmodel.cn/*
@@ -41,6 +41,7 @@
     isRunning: false,
     orderCreated: false,
     modalVisible: false,  // 检测到弹窗（验证码/支付）后停止一切刷新
+    preheated: false,     // TCP 预热是否已完成
     timerId: null,
     countdownId: null,
   };
@@ -69,6 +70,11 @@
     return result;
   };
 
+  // 伪装拦截后的 JSON.parse，防止被检测
+  Object.defineProperty(JSON.parse, 'toString', {
+    value: () => 'function parse() { [native code] }',
+  });
+
   function deepModifySoldOut(obj) {
     if (obj === null || typeof obj !== 'object') return obj;
 
@@ -88,6 +94,10 @@
           log(`[拦截] 将 ${key} 从 true 改为 false`);
         }
       }
+      if (key === 'isServerBusy' && obj[key] === true) {
+        obj[key] = false;
+        log('[拦截] 将 isServerBusy 从 true 改为 false');
+      }
       // 递归处理嵌套对象
       if (typeof obj[key] === 'object' && obj[key] !== null) {
         obj[key] = deepModifySoldOut(obj[key]);
@@ -101,6 +111,16 @@
   // --- 2a. fetch 拦截 ---
   const originalFetch = window.fetch;
   window.fetch = async function (...args) {
+    // 请求指纹随机化 — 每次请求看起来不一样，降低被识别为脚本的概率
+    if (isNearTargetTime() && args[1]) {
+      const headers = new Headers(args[1].headers);
+      headers.set('X-Request-Id', Math.random().toString(36).slice(2, 15));
+      headers.set('X-Timestamp', String(Date.now()));
+      const q = (0.5 + Math.random() * 0.5).toFixed(1);
+      headers.set('Accept-Language', `zh-CN,zh;q=${q},en;q=${(q * 0.7).toFixed(1)}`);
+      args[1] = { ...args[1], headers };
+    }
+
     let response = await originalFetch.apply(this, args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
 
@@ -134,8 +154,43 @@
         });
       } catch (e) { return response; }
     }
+
+    // check 校验: preview 请求成功时验证 bizId
+    if (/preview/i.test(url)) {
+      try {
+        const clone = response.clone();
+        const data = await clone.json();
+        if (data?.code === 200 && data?.data?.bizId) {
+          const valid = await checkBizId(data.data.bizId);
+          if (!valid) {
+            return new Response(JSON.stringify({code: -1, msg: 'bizId expired'}), {
+              status: 200, headers: { 'Content-Type': 'application/json' },
+            });
+          }
+        }
+      } catch (e) {}
+    }
+
     return response;
   };
+
+  // --- 2a-2. check 校验: 验证 bizId 有效性 ---
+  async function checkBizId(bizId) {
+    try {
+      const checkUrl = `${location.origin}/api/biz/pay/check?bizId=${encodeURIComponent(bizId)}`;
+      const resp = await originalFetch(checkUrl, { credentials: 'include' });
+      const data = await resp.json();
+      if (data && data.data === 'EXPIRE') {
+        log(`[check] bizId=${bizId} 已过期`);
+        return false;
+      }
+      log(`[check] bizId=${bizId} 校验通过`);
+      return true;
+    } catch (e) {
+      log(`[check] 校验异常: ${e.message}`);
+      return true; // 异常时放行
+    }
+  }
 
   // --- 2b. XMLHttpRequest 拦截 (覆盖不走 fetch 的请求) ---
   const _xhrOpen = XMLHttpRequest.prototype.open;
@@ -386,6 +441,12 @@
         }
       }
 
+      // TCP 预热 (提前3秒建立连接池)
+      if (diff <= 3000 && diff > 2000 && !state.preheated) {
+        state.preheated = true;
+        preheat();
+      }
+
       // 到点开始抢购
       if (diff <= CONFIG.advanceMs && !state.isRunning) {
         state.isRunning = true;
@@ -400,6 +461,20 @@
 
     log('倒计时已启动');
     setStatus('等待抢购时间...', '#aaa');
+  }
+
+  // ==================== 4b. TCP 预热 ====================
+  async function preheat() {
+    log('TCP 预热中...');
+    try {
+      const paths = ['/favicon.ico', '/api/biz/pay/check?bizId=preheat', '/'];
+      for (const p of paths) {
+        originalFetch(location.origin + p, { method: 'HEAD', cache: 'no-cache', credentials: 'include' }).catch(() => {});
+      }
+      log('预热完成 (3条连接已建立)');
+    } catch (e) {
+      log('预热失败，不影响使用');
+    }
   }
 
   // ==================== 5. 核心抢购逻辑 ====================
@@ -600,6 +675,8 @@
           log(`点击确认按钮: "${text}"`);
           state.orderCreated = true;
           setStatus('订单已创建! 请扫码支付', '#00ff88');
+          // 延迟检查支付弹窗是否弹出，没有则直接操作 Vue
+          setTimeout(forcePayDialog, 1500);
           return true;
         }
       }
@@ -640,6 +717,7 @@
               state.orderCreated = true;
               clearInterval(state.timerId);
               playAlert();
+              setTimeout(forcePayDialog, 1500);
             }
           }
         }
@@ -767,7 +845,51 @@
     }, 2000);
   }
 
-  // ==================== 10. 启动 ====================
+  // ==================== 10. Vue 组件直接操作 ====================
+
+  // 抢购成功后，如果支付弹窗没自动弹出，直接操作 Vue 组件
+  function forcePayDialog() {
+    const app = document.querySelector('#app');
+    const vue = app?.__vue__;
+    if (!vue) return;
+
+    let payComp = null;
+    const find = (vm, depth) => {
+      if (depth > 8) return;
+      if (vm.$data && 'payDialogVisible' in vm.$data) { payComp = vm; return; }
+      for (const child of (vm.$children || [])) { find(child, depth + 1); if (payComp) return; }
+    };
+    find(vue, 0);
+
+    if (!payComp) { log('[Vue] 未找到支付组件'); return; }
+    if (payComp.payDialogVisible) { log('[Vue] 支付弹窗已显示'); return; }
+
+    payComp.payDialogVisible = true;
+    log('[Vue] 已直接设置 payDialogVisible=true');
+  }
+
+  // 定时 patch Vue 组件的 isServerBusy
+  function patchVueServerBusy() {
+    let attempts = 0;
+    const tid = setInterval(() => {
+      if (++attempts > 30) { clearInterval(tid); return; }
+      const vue = document.querySelector('#app')?.__vue__;
+      if (!vue) return;
+      let patched = 0;
+      const walk = (vm, depth) => {
+        if (depth > 8) return;
+        if (vm.$data?.isServerBusy === true) { vm.isServerBusy = false; patched++; }
+        for (const child of (vm.$children || [])) walk(child, depth + 1);
+      };
+      walk(vue, 0);
+      if (patched > 0) {
+        log(`[Vue] 已解除 isServerBusy (${patched}个组件)`);
+        clearInterval(tid);
+      }
+    }, 500);
+  }
+
+  // ==================== 11. 启动 ====================
   function init() {
     // 启动错误恢复
     setupAutoRetryRefresh(); // 全页面级别的强刷兜底
@@ -778,8 +900,9 @@
     setupMutationObserver();
     setupAutoSnipeOnReady();   // 页面恢复后自动触发抢购
 
-    // 延迟校准时间
+    // 延迟校准时间 + patch Vue isServerBusy
     setTimeout(calibrateTime, 2000);
+    patchVueServerBusy();
 
     log(`脚本已启动 - 目标: ${CONFIG.targetPlan.toUpperCase()}`);
     log(`抢购时间: 每天 ${CONFIG.targetHour}:${String(CONFIG.targetMinute).padStart(2, '0')}:${String(CONFIG.targetSecond).padStart(2, '0')}`);

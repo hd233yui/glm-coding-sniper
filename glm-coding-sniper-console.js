@@ -30,6 +30,7 @@
     isRunning: false,
     orderCreated: false,
     modalVisible: false,
+    preheated: false,
     timerId: null,
   };
 
@@ -48,6 +49,9 @@
     try { if (isNearTarget()) r = fixSoldOut(r); } catch (e) {}
     return r;
   };
+  Object.defineProperty(JSON.parse, 'toString', {
+    value: () => 'function parse() { [native code] }',
+  });
 
   function fixSoldOut(obj) {
     if (!obj || typeof obj !== 'object') return obj;
@@ -57,21 +61,35 @@
         obj[k] = false;
         log('[拦截] ' + k + ' -> false');
       }
+      if (k === 'isServerBusy' && obj[k] === true) {
+        obj[k] = false;
+        log('[拦截] isServerBusy -> false');
+      }
       if (typeof obj[k] === 'object') obj[k] = fixSoldOut(obj[k]);
     }
     return obj;
   }
 
-  // ===== 2. 拦截 fetch (自动重试 + soldOut修改) =====
+  // ===== 2. 拦截 fetch (指纹随机化 + 自动重试 + soldOut修改 + check校验) =====
   const _fetch = window.fetch;
   window.fetch = async function (...args) {
+    // 请求指纹随机化
+    if (isNearTarget() && args[1]) {
+      const headers = new Headers(args[1].headers);
+      headers.set('X-Request-Id', Math.random().toString(36).slice(2, 15));
+      headers.set('X-Timestamp', String(Date.now()));
+      const q = (0.5 + Math.random() * 0.5).toFixed(1);
+      headers.set('Accept-Language', 'zh-CN,zh;q=' + q + ',en;q=' + (q * 0.7).toFixed(1));
+      args[1] = { ...args[1], headers };
+    }
+
     let res = await _fetch.apply(this, args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
 
     // 抢购窗口内，失败请求自动重试
     if (isNearTarget() && [429, 500, 502, 503].includes(res.status)) {
       for (let retry = 1; retry <= 8; retry++) {
-        console.log(`[GLM Sniper] fetch ${res.status}，重试${retry}: ${url}`);
+        console.log('[GLM Sniper] fetch ' + res.status + '，重试' + retry + ': ' + url);
         await new Promise(r => setTimeout(r, 300 * retry));
         try {
           res = await _fetch.apply(this, args);
@@ -98,8 +116,43 @@
         });
       } catch (e) { return res; }
     }
+
+    // check 校验: preview 请求成功时验证 bizId
+    if (/preview/i.test(url)) {
+      try {
+        const clone = res.clone();
+        const data = await clone.json();
+        if (data?.code === 200 && data?.data?.bizId) {
+          const valid = await checkBizId(data.data.bizId);
+          if (!valid) {
+            return new Response(JSON.stringify({code: -1, msg: 'bizId expired'}), {
+              status: 200, headers: { 'Content-Type': 'application/json' },
+            });
+          }
+        }
+      } catch (e) {}
+    }
+
     return res;
   };
+
+  // ===== 2a-2. check 校验 =====
+  async function checkBizId(bizId) {
+    try {
+      const checkUrl = location.origin + '/api/biz/pay/check?bizId=' + encodeURIComponent(bizId);
+      const resp = await _fetch(checkUrl, { credentials: 'include' });
+      const data = await resp.json();
+      if (data && data.data === 'EXPIRE') {
+        log('[check] bizId=' + bizId + ' 已过期');
+        return false;
+      }
+      log('[check] bizId=' + bizId + ' 校验通过');
+      return true;
+    } catch (e) {
+      log('[check] 校验异常: ' + e.message);
+      return true;
+    }
+  }
 
   // ===== 2b. XHR 拦截 (覆盖不走 fetch 的请求) =====
   const _xhrOpen = XMLHttpRequest.prototype.open;
@@ -117,7 +170,7 @@
     if (isNearTarget()) {
       this.addEventListener('load', function xhrRetryHandler() {
         if ([429, 500, 502, 503].includes(this.status)) {
-          console.log(`[GLM Sniper] XHR ${this.status}，1s后重试: ${this._sniperUrl}`);
+          console.log('[GLM Sniper] XHR ' + this.status + '，1s后重试: ' + this._sniperUrl);
           const self = this;
           setTimeout(() => {
             _xhrOpen.call(self, self._sniperMethod, self._sniperUrl, true);
@@ -237,7 +290,21 @@
     if (el) { el.textContent = msg; el.style.color = color || '#aaa'; }
   }
 
-  // ===== 4. 倒计时 =====
+  // ===== 4. TCP 预热 =====
+  async function preheat() {
+    log('TCP 预热中...');
+    try {
+      const paths = ['/favicon.ico', '/api/biz/pay/check?bizId=preheat', '/'];
+      for (const p of paths) {
+        _fetch(location.origin + p, { method: 'HEAD', cache: 'no-cache', credentials: 'include' }).catch(() => {});
+      }
+      log('预热完成 (3条连接已建立)');
+    } catch (e) {
+      log('预热失败，不影响使用');
+    }
+  }
+
+  // ===== 5. 倒计时 =====
   function getTarget() {
     const now = new Date(), t = new Date(now);
     t.setHours(CONFIG.targetHour, CONFIG.targetMinute, CONFIG.targetSecond, 0);
@@ -263,6 +330,12 @@
       el.style.color = diff <= 300000 ? '#fc0' : '#fff';
     }
 
+    // TCP 预热 (提前3秒)
+    if (diff <= 3000 && diff > 2000 && !state.preheated) {
+      state.preheated = true;
+      preheat();
+    }
+
     // 到点开抢
     if (diff <= CONFIG.advanceMs && !state.isRunning) {
       state.isRunning = true;
@@ -272,7 +345,7 @@
     }
   }, 50);
 
-  // ===== 5. 抢购 =====
+  // ===== 6. 抢购 =====
   function selectBilling() {
     const periods = {
       monthly:   { match: '包月', exclude: ['包季', '包年'], label: '连续包月' },
@@ -302,7 +375,6 @@
       }
       if (state.retryCount >= CONFIG.maxRetries) {
         clearInterval(state.timerId);
-        // 重置状态，允许 setupAutoSnipeOnReady 重新触发
         state.isRunning = false;
         state.retryCount = 0;
         log('本轮重试结束，等待页面恢复后重新触发...');
@@ -344,7 +416,6 @@
       max: ['max', 'Max', 'MAX', '旗舰', '高级'],
     }[CONFIG.targetPlan] || [];
 
-    // 找套餐卡片
     let card = null;
     for (const el of document.querySelectorAll('div,section,li,article')) {
       const t = el.textContent || '';
@@ -389,6 +460,7 @@
           state.orderCreated = true;
           setStatus('订单已创建! 快扫码!', '#0f8');
           playBeep();
+          setTimeout(forcePayDialog, 1500);
           return;
         }
       }
@@ -404,7 +476,7 @@
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   }
 
-  // ===== 6. 监控二维码出现 =====
+  // ===== 7. 监控二维码出现 =====
   new MutationObserver(muts => {
     if (!state.isRunning) return;
     for (const m of muts) {
@@ -421,12 +493,13 @@
           state.orderCreated = true;
           clearInterval(state.timerId);
           playBeep();
+          setTimeout(forcePayDialog, 1500);
         }
       }
     }
   }).observe(document.body, { childList: true, subtree: true });
 
-  // ===== 7. 页面恢复后自动触发抢购 =====
+  // ===== 8. 页面恢复后自动触发抢购 =====
   function setupAutoSnipeOnReady() {
     setInterval(() => {
       const now = new Date();
@@ -447,6 +520,47 @@
     }, 2000);
   }
 
+  // ===== 9. Vue 组件直接操作 =====
+  function forcePayDialog() {
+    const app = document.querySelector('#app');
+    const vue = app?.__vue__;
+    if (!vue) return;
+
+    let payComp = null;
+    const find = (vm, depth) => {
+      if (depth > 8) return;
+      if (vm.$data && 'payDialogVisible' in vm.$data) { payComp = vm; return; }
+      for (const child of (vm.$children || [])) { find(child, depth + 1); if (payComp) return; }
+    };
+    find(vue, 0);
+
+    if (!payComp) { log('[Vue] 未找到支付组件'); return; }
+    if (payComp.payDialogVisible) { log('[Vue] 支付弹窗已显示'); return; }
+
+    payComp.payDialogVisible = true;
+    log('[Vue] 已直接设置 payDialogVisible=true');
+  }
+
+  function patchVueServerBusy() {
+    let attempts = 0;
+    const tid = setInterval(() => {
+      if (++attempts > 30) { clearInterval(tid); return; }
+      const vue = document.querySelector('#app')?.__vue__;
+      if (!vue) return;
+      let patched = 0;
+      const walk = (vm, depth) => {
+        if (depth > 8) return;
+        if (vm.$data?.isServerBusy === true) { vm.isServerBusy = false; patched++; }
+        for (const child of (vm.$children || [])) walk(child, depth + 1);
+      };
+      walk(vue, 0);
+      if (patched > 0) {
+        log('[Vue] 已解除 isServerBusy (' + patched + '个组件)');
+        clearInterval(tid);
+      }
+    }, 500);
+  }
+
   function playBeep() {
     try {
       const c = new AudioContext();
@@ -459,14 +573,16 @@
     } catch (e) {}
   }
 
-  // ===== 8. 启动 =====
+  // ===== 10. 启动 =====
   setupModalProtector();
   setupErrorSuppressor();
   setupAutoSnipeOnReady();
+  patchVueServerBusy();
   unlock();
   log('脚本已启动 - 目标: ' + CONFIG.targetPlan.toUpperCase());
   log('到 ' + CONFIG.targetHour + ':00 自动抢购');
   log('页面异常自动恢复，弹窗自动冻结刷新');
+  log('已启用: TCP预热/指纹随机化/check校验/Vue直接操作');
   setStatus('等待中...', '#aaa');
 
   // 如果现在刚好是10:00
