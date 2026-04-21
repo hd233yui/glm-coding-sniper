@@ -51,8 +51,8 @@
     const target = new Date(now);
     target.setHours(CONFIG.targetHour, CONFIG.targetMinute, CONFIG.targetSecond, 0);
     const diff = target - now;
-    // 前1分钟 到 后5分钟 的窗口期内才拦截
-    return diff <= 60000 && diff >= -300000;
+    // 前1分钟 到 后15分钟 的窗口期内才拦截
+    return diff <= 60000 && diff >= -900000;
   }
 
   const originalParse = JSON.parse;
@@ -95,70 +95,118 @@
     return obj;
   }
 
-  // ==================== 2. 拦截 fetch/XHR 响应 ====================
+  // ==================== 2. 拦截 fetch + XHR (自动重试 + soldOut修改) ====================
+
+  // --- 2a. fetch 拦截 ---
   const originalFetch = window.fetch;
   window.fetch = async function (...args) {
-    const response = await originalFetch.apply(this, args);
-
-    // 只在抢购时间窗口内拦截
-    if (!isNearTargetTime()) return response;
-
-    // 克隆响应以便修改
+    let response = await originalFetch.apply(this, args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
-    if (
-      url.includes('coding') ||
-      url.includes('plan') ||
-      url.includes('order') ||
-      url.includes('subscribe') ||
-      url.includes('product') ||
-      url.includes('package')
-    ) {
-      const clone = response.clone();
-      const newResponse = new Response(
-        new ReadableStream({
-          async start(controller) {
-            const reader = clone.body.getReader();
-            const decoder = new TextDecoder();
-            const encoder = new TextEncoder();
-            let fullText = '';
 
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              fullText += decoder.decode(value, { stream: true });
-            }
+    // 抢购窗口内，失败请求自动重试
+    if (isNearTargetTime() && [429, 500, 502, 503].includes(response.status)) {
+      for (let retry = 1; retry <= 8; retry++) {
+        console.log(`[GLM Sniper] fetch ${response.status}，重试${retry}: ${url}`);
+        await new Promise(r => setTimeout(r, 300 * retry));
+        try {
+          response = await originalFetch.apply(this, args);
+          if (response.ok) { console.log('[GLM Sniper] fetch 重试成功!'); break; }
+        } catch (e) {}
+      }
+    }
 
-            // 替换售罄状态
-            let modified = fullText
-              .replace(/"isSoldOut"\s*:\s*true/g, '"isSoldOut":false')
-              .replace(/"soldOut"\s*:\s*true/g, '"soldOut":false')
-              .replace(/"is_sold_out"\s*:\s*true/g, '"is_sold_out":false')
-              .replace(/"sold_out"\s*:\s*true/g, '"sold_out":false');
-
-            if (modified !== fullText) {
-              log('[拦截] 已修改 fetch 响应中的售罄状态');
-            }
-
-            controller.enqueue(encoder.encode(modified));
-            controller.close();
-          },
-        }),
-        {
+    // soldOut 拦截
+    if (!isNearTargetTime()) return response;
+    if (/coding|plan|order|subscribe|product|package/i.test(url)) {
+      try {
+        const text = await response.clone().text();
+        const modified = text
+          .replace(/"isSoldOut"\s*:\s*true/g, '"isSoldOut":false')
+          .replace(/"soldOut"\s*:\s*true/g, '"soldOut":false')
+          .replace(/"is_sold_out"\s*:\s*true/g, '"is_sold_out":false')
+          .replace(/"sold_out"\s*:\s*true/g, '"sold_out":false');
+        if (modified !== text) log('[拦截] 已修改 fetch 响应中的售罄状态');
+        return new Response(modified, {
           status: response.status,
           statusText: response.statusText,
           headers: response.headers,
-        }
-      );
-
-      // 复制原始响应的属性
-      Object.defineProperty(newResponse, 'url', { value: response.url });
-      Object.defineProperty(newResponse, 'ok', { value: response.ok });
-      Object.defineProperty(newResponse, 'type', { value: response.type });
-      return newResponse;
+        });
+      } catch (e) { return response; }
     }
-
     return response;
   };
+
+  // --- 2b. XMLHttpRequest 拦截 (覆盖不走 fetch 的请求) ---
+  const _xhrOpen = XMLHttpRequest.prototype.open;
+  const _xhrSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this._sniperUrl = url;
+    this._sniperMethod = method;
+    this._sniperArgs = null;
+    return _xhrOpen.call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function (...args) {
+    this._sniperArgs = args;
+    if (isNearTargetTime()) {
+      this.addEventListener('load', function xhrRetryHandler() {
+        if ([429, 500, 502, 503].includes(this.status)) {
+          console.log(`[GLM Sniper] XHR ${this.status}，1s后重试: ${this._sniperUrl}`);
+          const self = this;
+          setTimeout(() => {
+            // 用原始方法重新打开并发送
+            _xhrOpen.call(self, self._sniperMethod, self._sniperUrl, true);
+            _xhrSend.apply(self, self._sniperArgs || []);
+          }, 1000);
+        }
+      });
+    }
+    return _xhrSend.apply(this, args);
+  };
+
+  // --- 2c. 错误页面 DOM 抑制：检测到错误渲染时隐藏并触发重新加载数据 ---
+  function setupErrorSuppressor() {
+    if (!document.body) {
+      setTimeout(setupErrorSuppressor, 200);
+      return;
+    }
+
+    new MutationObserver(() => {
+      if (!isNearTargetTime()) return;
+
+      const bodyText = document.body.textContent || '';
+      if (!bodyText.includes('访问人数较多') && !bodyText.includes('请刷新重试') && !bodyText.includes('服务繁忙')) return;
+
+      // 找到包含错误信息的容器并隐藏
+      const errorNodes = document.querySelectorAll('div, section, p');
+      for (const node of errorNodes) {
+        const t = node.textContent || '';
+        if ((t.includes('访问人数较多') || t.includes('请刷新重试')) && node.offsetHeight > 50) {
+          // 不删除节点（避免SPA报错），只是隐藏
+          node.style.display = 'none';
+          console.log('[GLM Sniper] 隐藏错误页面，触发重新加载...');
+
+          // 通过 SPA 路由重新触发数据加载
+          setTimeout(() => {
+            // 方法1: pushState 触发 popstate
+            const currentUrl = window.location.href;
+            window.history.pushState(null, '', currentUrl);
+            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+          }, 500);
+
+          setTimeout(() => {
+            // 方法2: 如果 popstate 没用，用 hashchange
+            const hash = window.location.hash;
+            window.location.hash = hash + '_retry';
+            setTimeout(() => { window.location.hash = hash; }, 100);
+          }, 1500);
+
+          break;
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
 
   // ==================== 3. UI 覆盖层 ====================
   function createOverlay() {
@@ -596,8 +644,56 @@
     }
   }
 
-  // ==================== 8. 启动 ====================
+  // ==================== 8. 页面加载失败自动恢复 ====================
+  let _refreshCount = 0;
+
+  function setupAutoRetryRefresh() {
+    function checkAndRecover() {
+      const now = new Date();
+      const h = now.getHours(), m = now.getMinutes();
+      // 10:00 ~ 10:30 窗口内持续尝试恢复
+      const inWindow = h === CONFIG.targetHour && m < 30;
+      if (!inWindow) return;
+
+      const bodyText = document.body?.textContent || '';
+      const errorKeywords = ['访问人数较多', '请刷新重试', '请稍后再试', '服务繁忙', '网络错误', '加载失败'];
+      const isError = errorKeywords.some(kw => bodyText.includes(kw));
+
+      // 页面 HTML 都没加载出来（完全空白 / 502 / 503 纯文本）
+      const pageBlank = document.body && document.body.children.length < 3 && bodyText.trim().length < 100;
+
+      if (!isError && !pageBlank) {
+        // 页面正常，重置计数器
+        _refreshCount = 0;
+        return;
+      }
+
+      _refreshCount++;
+      console.log(`[GLM Sniper] 页面异常 (第${_refreshCount}次)，强制刷新...`);
+
+      // 直接强刷，带 cache-busting 绕缓存，不限次数
+      const url = new URL(window.location.href);
+      url.searchParams.set('_t', Date.now());
+      window.location.replace(url.toString());
+    }
+
+    // 页面加载完后检查
+    if (document.readyState === 'complete') {
+      setTimeout(checkAndRecover, 1500);
+    } else {
+      window.addEventListener('load', () => setTimeout(checkAndRecover, 2000));
+    }
+
+    // 持续监控（每2秒检查一次）
+    setInterval(checkAndRecover, 2000);
+  }
+
+  // ==================== 9. 启动 ====================
   function init() {
+    // 启动错误恢复
+    setupAutoRetryRefresh();   // 全页面级别的强刷兜底
+    setupErrorSuppressor();    // DOM级别的错误抑制 + SPA路由重试
+
     createOverlay();
     setupMutationObserver();
 
@@ -607,13 +703,13 @@
     log(`脚本已启动 - 目标: ${CONFIG.targetPlan.toUpperCase()}`);
     log(`抢购时间: 每天 ${CONFIG.targetHour}:${String(CONFIG.targetMinute).padStart(2, '0')}:${String(CONFIG.targetSecond).padStart(2, '0')}`);
     log('提前10秒自动刷新，到点自动抢购');
+    log('页面加载失败会自动强刷');
 
     // 如果当前已经是10:00附近 (比如刚好打开页面)
     const now = new Date();
     if (
       now.getHours() === CONFIG.targetHour &&
-      now.getMinutes() === CONFIG.targetMinute &&
-      now.getSeconds() <= 5
+      now.getMinutes() <= 15
     ) {
       log('当前正是抢购时间! 立即开始!');
       state.isRunning = true;
