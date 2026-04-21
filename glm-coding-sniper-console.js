@@ -33,12 +33,12 @@
     timerId: null,
   };
 
-  // ===== 时间窗口检查: 只在 10:00 前1分钟 ~ 后60分钟内拦截 =====
+  // ===== 时间窗口检查: 只在 10:00 前1分钟 ~ 后30分钟内拦截 (9:59 ~ 10:30) =====
   function isNearTarget() {
     const now = new Date(), t = new Date(now);
     t.setHours(CONFIG.targetHour, CONFIG.targetMinute, CONFIG.targetSecond, 0);
     const diff = t - now;
-    return diff <= 60000 && diff >= -3600000;
+    return diff <= 60000 && diff >= -1800000;
   }
 
   // ===== 1. 拦截 JSON.parse =====
@@ -430,7 +430,7 @@
   function setupAutoSnipeOnReady() {
     setInterval(() => {
       const now = new Date();
-      if (now.getHours() !== CONFIG.targetHour) return;
+      if (now.getHours() !== CONFIG.targetHour || now.getMinutes() > 30) return;
       if (state.isRunning || state.orderCreated || state.modalVisible) return;
 
       const bodyText = document.body?.textContent || '';

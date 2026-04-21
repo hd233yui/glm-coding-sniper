@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.0.0
-// @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄状态+自动点击+自动重试
+// @version      1.1.0
+// @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
 // @author       qiandai
 // @match        https://open.bigmodel.cn/*
 // @match        https://www.bigmodel.cn/*
@@ -52,8 +52,8 @@
     const target = new Date(now);
     target.setHours(CONFIG.targetHour, CONFIG.targetMinute, CONFIG.targetSecond, 0);
     const diff = target - now;
-    // 前1分钟 到 后60分钟 的窗口期内才拦截
-    return diff <= 60000 && diff >= -3600000;
+    // 前1分钟 到 后30分钟 的窗口期内才拦截 (9:59 ~ 10:30)
+    return diff <= 60000 && diff >= -1800000;
   }
 
   const originalParse = JSON.parse;
@@ -704,7 +704,7 @@
       const now = new Date();
       const h = now.getHours(), m = now.getMinutes();
       // 10:00 ~ 10:30 窗口内持续尝试恢复
-      const inWindow = h === CONFIG.targetHour;
+      const inWindow = h === CONFIG.targetHour && m <= 30;
       if (!inWindow) return;
       // 有弹窗时绝不刷新（保护验证码/支付弹窗）
       if (state.modalVisible) return;
@@ -748,7 +748,7 @@
     setInterval(() => {
       const now = new Date();
       const h = now.getHours(), m = now.getMinutes();
-      if (h !== CONFIG.targetHour) return;
+      if (h !== CONFIG.targetHour || m > 30) return;
       if (state.isRunning || state.orderCreated || state.modalVisible) return;
 
       // 检测页面是否有购买按钮（说明页面正常加载了）

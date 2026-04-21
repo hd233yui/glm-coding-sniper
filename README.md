@@ -1,3 +1,5 @@
+> **⚠️ NOTICE / 提示：This script is still in testing phase. Use at your own risk. / 当前脚本仍处于测试阶段，使用风险自负。**
+
 [English](#english) | [中文](#中文)
 
 ---
@@ -14,25 +16,27 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 
 ## Features
 
-- **Sold-out Bypass** — Intercepts `soldOut` flags during the purchase window (9:59 ~ 10:15) to enable buttons
+- **Sold-out Bypass** — Intercepts `soldOut` flags during the purchase window (9:59 ~ 10:30) to enable buttons
 - **Plan Selection** — Defaults to Pro + Quarterly billing (configurable via `targetPlan` and `billingPeriod`)
-- **Precision Timing** — Auto-clicks the purchase button at 10:00:00 with 100ms retry interval
+- **Precision Timing** — Auto-clicks the purchase button at 10:00:00 with 100ms retry interval, up to 300 retries (30 seconds per round)
 - **Auto Confirm** — Automatically clicks confirm/pay buttons in popups
 - **QR Detection** — Plays an alert sound when the payment QR code appears
-- **Overlay UI** — Real-time countdown and log displayed in the top-right corner
+- **Overlay UI** — Real-time countdown, log, and payment safety warning displayed in the top-right corner
 - **Auto Refresh** — Refreshes the page at 9:59:50 to fetch the latest state
 - **API Auto-Retry** — Automatically retries failed fetch/XHR requests (429/500/502/503) up to 8 times with incremental delay
+- **Smart Modal Protection** — Detects CAPTCHA and payment modals by content (not just CSS class), freezes all refresh logic to protect them; auto-resumes when modal disappears
+- **Auto Re-trigger** — After each retry round or page recovery, automatically re-triggers the purchase flow (no manual intervention needed throughout 10:30)
 - **Error Page Recovery** — Three-tier recovery when the page shows "too many visitors":
   1. DOM-level suppression: hides the error and re-triggers SPA data loading via `pushState`/`popstate`
   2. Full page refresh with cache-busting as fallback
-  3. Recovery window extends to 10:30, ensuring continued retries
+  3. Recovery window covers 10:30, ensuring continued retries
 
 ## Two Versions
 
 | File | Description |
 |------|-------------|
 | `glm-coding-sniper.user.js` | **Tampermonkey userscript** — runs automatically after installation (recommended) |
-| `glm-coding-sniper-console.js` | **Browser console version** — paste into F12 Console, fallback when Tampermonkey is unavailable |
+| `glm-coding-sniper-console.js` | **Browser console version** — paste into F12 Console, fallback when Tampermonkey is unavailable (now feature-complete with Tampermonkey version) |
 
 ## Usage
 
@@ -65,7 +69,7 @@ const CONFIG = {
   targetMinute: 0,             // target minute
   advanceMs: 200,              // ms to start early (compensate network latency)
   retryInterval: 100,          // retry interval in ms
-  maxRetries: 50,              // max retry attempts
+  maxRetries: 300,             // max retry attempts per round (300 * 100ms = 30s)
 };
 ```
 
@@ -78,13 +82,17 @@ Page loads → Intercept soldOut to enable buttons → Auto-click "Subscribe" at
 → Auto-click confirm popup → CAPTCHA appears (manual) → QR code appears → Scan to pay
 ```
 
+If the purchase attempt times out (30 seconds), the script resets and waits for the page to recover, then automatically re-triggers — this cycle repeats throughout 10:30.
+
 If the page shows "too many visitors" error, the script handles it in layers:
 
 ```
 API returns 429/5xx → fetch/XHR auto-retry (up to 8 times, incremental delay)
 → If error page still renders → DOM suppression (hide error + pushState re-trigger)
-→ If still broken → full page refresh with cache-busting (every 2s, up to 10:30)
+→ If still broken → full page refresh with cache-busting (every 2s, until 10:30)
 ```
+
+If a CAPTCHA or payment modal appears, the script detects it by content (verification/payment keywords) and freezes all refresh logic to protect it. Once the modal disappears, auto-purchasing resumes.
 
 **The script cannot bypass CAPTCHAs.** If a slider or image verification appears after clicking the purchase button, you need to complete it manually. The script's value is:
 
@@ -95,9 +103,10 @@ API returns 429/5xx → fetch/XHR auto-retry (up to 8 times, incremental delay)
 
 ## Important Notes
 
-- **Buttons stay disabled outside the purchase window** — sold-out interception only activates during 9:59~10:15
+- **Buttons stay disabled outside the purchase window** — sold-out interception only activates during 9:59~11:00
 - **Don't open multiple tabs** — one is enough, more tabs cause lag
 - **Have your payment app ready** — QR codes expire quickly
+- **Don't pay if the order shows no amount** — if the payment QR appears without a price, do not scan it
 - **Frontend only** — backend inventory validation is unaffected; if it's truly out of stock, the script can't help
 
 ## Alternatives
@@ -127,25 +136,27 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ## 功能
 
-- **售罄状态拦截** — 在抢购窗口期（9:59 ~ 10:15）自动将 `soldOut` 改为 `false`，让按钮可点击
+- **售罄状态拦截** — 在抢购窗口期（9:59 ~ 10:30）自动将 `soldOut` 改为 `false`，让按钮可点击
 - **自动选择套餐** — 默认选择 Pro + 连续包季（可通过 `targetPlan` 和 `billingPeriod` 配置）
-- **精准定时** — 10:00:00 自动点击购买按钮，100ms 间隔重试
+- **精准定时** — 10:00:00 自动点击购买按钮，100ms 间隔重试，每轮最多 300 次（30秒）
 - **自动确认** — 自动点击弹窗中的确认/支付按钮
 - **二维码检测** — 检测到支付二维码后播放提示音
-- **悬浮窗** — 右上角实时显示倒计时和运行日志
+- **悬浮窗** — 右上角实时显示倒计时、运行日志和付款安全提示
 - **自动刷新** — 9:59:50 自动刷新页面获取最新状态
 - **API 自动重试** — fetch/XHR 请求遇到 429/500/502/503 自动重试最多 8 次，递增延迟
+- **智能弹窗保护** — 通过内容（而非 CSS 类名）检测验证码/支付弹窗，出现时冻结所有刷新逻辑；弹窗消失后自动恢复
+- **自动重新触发** — 每轮重试结束或页面恢复后自动重新发起抢购，10:30无需手动干预
 - **错误页面自动恢复** — "访问人数较多"三级恢复策略：
   1. DOM 级抑制：隐藏错误内容，通过 `pushState`/`popstate` 触发 SPA 重新加载数据
   2. 全页面强制刷新（带 cache-busting 参数）兜底
-  3. 恢复窗口延长至 10:30，确保持续重试
+  3. 恢复窗口覆盖10:30，确保持续重试
 
 ## 两个版本
 
 | 文件 | 说明 |
 |------|------|
 | `glm-coding-sniper.user.js` | **Tampermonkey 油猴脚本**，安装后自动运行，推荐使用 |
-| `glm-coding-sniper-console.js` | **浏览器控制台版**，直接粘贴到 F12 Console 运行，Tampermonkey 不可用时的备选 |
+| `glm-coding-sniper-console.js` | **浏览器控制台版**，直接粘贴到 F12 Console 运行，Tampermonkey 不可用时的备选（已与油猴版功能同步） |
 
 ## 使用方法
 
@@ -178,7 +189,7 @@ const CONFIG = {
   targetMinute: 0,             // 抢购分钟
   advanceMs: 200,              // 提前多少ms开始（补偿网络延迟）
   retryInterval: 100,          // 重试间隔ms
-  maxRetries: 50,              // 最大重试次数
+  maxRetries: 300,             // 每轮最大重试次数（300次 * 100ms = 30秒）
 };
 ```
 
@@ -191,6 +202,8 @@ const CONFIG = {
 → 自动点确认弹窗 → 弹出验证码（需手动完成）→ 弹出支付二维码 → 扫码付款
 ```
 
+如果本轮重试超时（30秒），脚本会自动重置状态并等待页面恢复后重新触发，10:30持续循环。
+
 如果页面显示"当前访问人数较多"，脚本会分层处理：
 
 ```
@@ -198,6 +211,8 @@ API 返回 429/5xx → fetch/XHR 自动重试（最多8次，递增延迟）
 → 错误页面仍然渲染 → DOM 级抑制（隐藏错误 + pushState 触发重新加载）
 → 仍然异常 → 全页面强刷（每2秒，带时间戳绕缓存，持续到10:30）
 ```
+
+如果出现验证码或支付弹窗，脚本通过内容关键词（验证/滑动/支付等）检测，冻结所有刷新逻辑以保护弹窗；弹窗消失后自动恢复抢购。
 
 **脚本无法绕过验证码。** 如果点击购买按钮后弹出滑块或图形验证，需要你手动完成。脚本的价值在于：
 
@@ -208,9 +223,10 @@ API 返回 429/5xx → fetch/XHR 自动重试（最多8次，递增延迟）
 
 ## 注意事项
 
-- **非抢购时段点击无效** — 售罄拦截只在 9:59~10:15 窗口期生效，其他时间按钮保持原样
+- **非抢购时段点击无效** — 售罄拦截只在 9:59~11:00 窗口期生效，其他时间按钮保持原样
 - **不要开多个标签页** — 一个就够，多了浏览器卡反而慢
 - **提前准备支付** — 把支付宝/微信打开，二维码有效期很短
+- **订单无金额不要付款** — 如果支付二维码出现但订单没有显示金额，请不要扫码
 - **脚本只改前端** — 后端库存校验不受影响，抢不到说明确实没货了
 
 ## 替代方案
