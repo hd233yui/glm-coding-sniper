@@ -609,6 +609,32 @@
     });
   }
 
+  async function fetchProductIdDirectly() {
+    if (_capturedProductId) return true;
+    log('[主动获取] 尝试直接调用产品列表 API...');
+    try {
+      const resp = await _fetch(location.origin + '/api/biz/pay/batch-preview', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json;charset=UTF-8',
+          'accept': 'application/json, text/plain, */*',
+        },
+        body: '{}',
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        captureProductIdFromData(data?.data || data);
+        if (_capturedProductId) {
+          log('[主动获取] 成功: productId=' + _capturedProductId);
+          return true;
+        }
+      }
+    } catch (e) {}
+    log('[主动获取] batch-preview 无响应或未匹配到目标套餐');
+    return false;
+  }
+
   async function startSnipe() {
     if (_confirmedSoldOut) {
       log('已确认售罄，不启动抢购');
@@ -626,8 +652,14 @@
         log('productId 已就绪: ' + _capturedProductId);
         setStatus('productId 就绪，开始抢购...', '#0f8');
       } else {
-        log('警告: 3s 内未捕获 productId，强行继续');
-        setStatus('productId 未捕获，强行继续...', '#f80');
+        // 降级：主动调用产品 API 获取
+        log('主动获取 productId...');
+        setStatus('主动获取 productId...', '#fc0');
+        const fetched = await fetchProductIdDirectly();
+        if (!fetched) {
+          log('警告: productId 获取失败，强行继续（请求可能报错）');
+          setStatus('productId 未获取，强行继续...', '#f80');
+        }
       }
     }
     state.timerId = setInterval(() => {
@@ -792,79 +824,120 @@
   }
 
   // ===== 9. Vue 组件直接操作 =====
-  function ensureProductId() {
-    const pid = getProductId();
-    if (!pid) { log('[Vue] 没有捕获到 productId，无法恢复'); return; }
+
+  // --- Vue 版本检测 + 统一 walker ---
+  function getVueRoot() {
     const app = document.querySelector('#app');
-    const vue = app?.__vue__;
-    if (!vue) return;
-    let fixed = 0;
-    const walk = (vm, depth) => {
-      if (depth > 10) return;
-      if (vm.$data) {
-        for (const key of Object.keys(vm.$data)) {
-          if (/product.?id/i.test(key) && !vm.$data[key]) {
-            vm[key] = _capturedProductId;
-            fixed++;
-            log('[Vue] 已设置 ' + key + '=' + _capturedProductId);
-          }
+    if (!app) return null;
+    if (app.__vue__)               return { ver: 2, root: app.__vue__ };          // Vue 2
+    if (app.__vue_app__?._instance) return { ver: 3, root: app.__vue_app__._instance }; // Vue 3
+    return null;
+  }
+
+  // 统一遍历 Vue 2/3 组件树，对每个组件实例调用 fn(vm, ver)
+  function walkVueTree(vm, ver, depth, fn) {
+    if (!vm || depth > 10) return;
+    fn(vm, ver);
+    if (ver === 2) {
+      for (const child of (vm.$children || [])) walkVueTree(child, 2, depth + 1, fn);
+    } else {
+      // Vue 3：通过 subTree vnode 找子组件实例
+      const walkVNode = (vnode, d) => {
+        if (!vnode || d > 12) return;
+        if (vnode.component) walkVueTree(vnode.component, 3, d, fn);
+        if (Array.isArray(vnode.children)) {
+          vnode.children.forEach(c => c && typeof c === 'object' && walkVNode(c, d + 1));
         }
-      }
-      for (const child of (vm.$children || [])) walk(child, depth + 1);
-    };
-    walk(vue, 0);
-    if (fixed === 0) {
-      const walkAll = (vm, depth) => {
-        if (depth > 10 || fixed > 0) return;
-        if (vm.$data) {
-          for (const key of Object.keys(vm.$data)) {
-            if (/product.?id/i.test(key)) {
-              vm[key] = _capturedProductId;
-              fixed++;
-              log('[Vue] 强制设置 ' + key + '=' + _capturedProductId);
-              return;
-            }
-          }
-        }
-        for (const child of (vm.$children || [])) walkAll(child, depth + 1);
       };
-      walkAll(vue, 0);
+      if (vm.subTree) walkVNode(vm.subTree, depth + 1);
     }
   }
 
+  // 读取组件数据（Vue 2: $data；Vue 3: proxy 代理对象）
+  function getVMData(vm, ver) {
+    if (ver === 2) return vm.$data || {};
+    return vm.proxy || {};
+  }
+
+  // 向组件写入属性
+  function setVMProp(vm, ver, key, val) {
+    try {
+      if (ver === 2) vm[key] = val;
+      else if (vm.proxy) vm.proxy[key] = val;
+    } catch (e) {}
+  }
+
+  function ensureProductId() {
+    const pid = getProductId();
+    if (!pid) { log('[Vue] 没有捕获到 productId，无法恢复'); return; }
+
+    const vr = getVueRoot();
+    if (!vr) { log('[Vue] 未检测到 Vue 实例'); return; }
+
+    let fixed = 0;
+    // 第一遍：只修复空值字段
+    walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+      const data = getVMData(vm, ver);
+      for (const key of Object.keys(data)) {
+        if (/product.?id/i.test(key) && !data[key]) {
+          setVMProp(vm, ver, key, pid);
+          fixed++;
+          log('[Vue' + ver + '] 已设置 ' + key + '=' + pid);
+        }
+      }
+    });
+    if (fixed === 0) {
+      log('[Vue] 未找到空的 productId 字段，尝试广搜...');
+      // 第二遍：找到任意 productId 字段强制覆盖
+      walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+        if (fixed > 0) return;
+        const data = getVMData(vm, ver);
+        for (const key of Object.keys(data)) {
+          if (/product.?id/i.test(key)) {
+            setVMProp(vm, ver, key, pid);
+            fixed++;
+            log('[Vue' + ver + '] 强制设置 ' + key + '=' + pid);
+            return;
+          }
+        }
+      });
+    }
+  }
+
+  // 抢购成功后，如果支付弹窗没自动弹出，直接操作 Vue 组件
   function forcePayDialog() {
-    const app = document.querySelector('#app');
-    const vue = app?.__vue__;
-    if (!vue) return;
+    const vr = getVueRoot();
+    if (!vr) return;
 
     let payComp = null;
-    const find = (vm, depth) => {
-      if (depth > 8) return;
-      if (vm.$data && 'payDialogVisible' in vm.$data) { payComp = vm; return; }
-      for (const child of (vm.$children || [])) { find(child, depth + 1); if (payComp) return; }
-    };
-    find(vue, 0);
+    walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+      if (payComp) return;
+      const data = getVMData(vm, ver);
+      if ('payDialogVisible' in data) payComp = { vm, ver };
+    });
 
     if (!payComp) { log('[Vue] 未找到支付组件'); return; }
-    if (payComp.payDialogVisible) { log('[Vue] 支付弹窗已显示'); return; }
+    const data = getVMData(payComp.vm, payComp.ver);
+    if (data.payDialogVisible) { log('[Vue] 支付弹窗已显示'); return; }
 
-    payComp.payDialogVisible = true;
-    log('[Vue] 已直接设置 payDialogVisible=true');
+    setVMProp(payComp.vm, payComp.ver, 'payDialogVisible', true);
+    log('[Vue' + payComp.ver + '] 已直接设置 payDialogVisible=true');
   }
 
   function patchVueServerBusy() {
     let attempts = 0;
     const tid = setInterval(() => {
       if (++attempts > 30) { clearInterval(tid); return; }
-      const vue = document.querySelector('#app')?.__vue__;
-      if (!vue) return;
+      const vr = getVueRoot();
+      if (!vr) return;
       let patched = 0;
-      const walk = (vm, depth) => {
-        if (depth > 8) return;
-        if (vm.$data?.isServerBusy === true) { vm.isServerBusy = false; patched++; }
-        for (const child of (vm.$children || [])) walk(child, depth + 1);
-      };
-      walk(vue, 0);
+      walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+        const data = getVMData(vm, ver);
+        if (data.isServerBusy === true) {
+          setVMProp(vm, ver, 'isServerBusy', false);
+          patched++;
+        }
+      });
       if (patched > 0) {
         log('[Vue] 已解除 isServerBusy (' + patched + '个组件)');
         clearInterval(tid);

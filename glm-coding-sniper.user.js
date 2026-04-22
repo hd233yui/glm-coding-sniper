@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.2.7
+// @version      1.3.0
 // @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
 // @author       hd233yui
 // @match        https://open.bigmodel.cn/*
@@ -171,7 +171,6 @@
         _allProductIds[key] = item.productId;
         if (info.plan === CONFIG.targetPlan && info.period === CONFIG.billingPeriod) {
           _capturedProductId = item.productId;
-          _capturedProductInfo = item;
           log(`[捕获] productId=${item.productId} (${CONFIG.targetPlan}/${CONFIG.billingPeriod})`);
           // 持久化到 localStorage，刷新后立即可用，无需等 API 响应
           try {
@@ -279,7 +278,6 @@
 
   // 捕获的 productId (从 JSON.parse / API 响应 / 请求中提取)
   let _capturedProductId = null;
-  let _capturedProductInfo = null; // 完整的产品信息
 
   // --- 2a. fetch 拦截 ---
   const originalFetch = window.fetch;
@@ -792,6 +790,34 @@
     });
   }
 
+  // ==================== 4d. 主动获取 productId（降级策略）====================
+  // waitForProductId 超时后的最后手段：直接调用产品列表 API
+  async function fetchProductIdDirectly() {
+    if (_capturedProductId) return true;
+    log('[主动获取] 尝试直接调用产品列表 API...');
+    try {
+      const resp = await originalFetch(location.origin + '/api/biz/pay/batch-preview', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json;charset=UTF-8',
+          'accept': 'application/json, text/plain, */*',
+        },
+        body: '{}',
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        captureProductIdFromData(data?.data || data);
+        if (_capturedProductId) {
+          log(`[主动获取] 成功: productId=${_capturedProductId}`);
+          return true;
+        }
+      }
+    } catch (e) {}
+    log('[主动获取] batch-preview 无响应或未匹配到目标套餐');
+    return false;
+  }
+
   // ==================== 5. 核心抢购逻辑 ====================
   function selectBillingPeriod() {
     const periodKeywords = {
@@ -838,8 +864,14 @@
         log(`productId 已就绪: ${_capturedProductId}`);
         setStatus('productId 就绪，开始抢购...', '#00ff88');
       } else {
-        log('警告: 3s 内未捕获 productId，强行继续（可能报错）');
-        setStatus('productId 未捕获，强行继续...', '#ff8800');
+        // 降级：主动调用产品 API 获取
+        log('主动获取 productId...');
+        setStatus('主动获取 productId...', '#ffcc00');
+        const fetched = await fetchProductIdDirectly();
+        if (!fetched) {
+          log('警告: productId 获取失败，强行继续（请求可能报错）');
+          setStatus('productId 未获取，强行继续...', '#ff8800');
+        }
       }
     }
 
@@ -1208,77 +1240,105 @@
 
   // ==================== 10. Vue 组件直接操作 ====================
 
+  // --- Vue 版本检测 + 统一 walker ---
+  function getVueRoot() {
+    const app = document.querySelector('#app');
+    if (!app) return null;
+    if (app.__vue__)              return { ver: 2, root: app.__vue__ };          // Vue 2
+    if (app.__vue_app__?._instance) return { ver: 3, root: app.__vue_app__._instance }; // Vue 3
+    return null;
+  }
+
+  // 统一遍历 Vue 2/3 组件树，对每个组件实例调用 fn(vm, ver)
+  function walkVueTree(vm, ver, depth, fn) {
+    if (!vm || depth > 10) return;
+    fn(vm, ver);
+    if (ver === 2) {
+      for (const child of (vm.$children || [])) walkVueTree(child, 2, depth + 1, fn);
+    } else {
+      // Vue 3：通过 subTree vnode 找子组件实例
+      const walkVNode = (vnode, d) => {
+        if (!vnode || d > 12) return;
+        if (vnode.component) walkVueTree(vnode.component, 3, d, fn);
+        if (Array.isArray(vnode.children)) {
+          vnode.children.forEach(c => c && typeof c === 'object' && walkVNode(c, d + 1));
+        }
+      };
+      if (vm.subTree) walkVNode(vm.subTree, depth + 1);
+    }
+  }
+
+  // 读取组件数据（Vue 2: $data；Vue 3: proxy 代理对象）
+  function getVMData(vm, ver) {
+    if (ver === 2) return vm.$data || {};
+    return vm.proxy || {};
+  }
+
+  // 向组件写入属性
+  function setVMProp(vm, ver, key, val) {
+    try {
+      if (ver === 2) vm[key] = val;
+      else if (vm.proxy) vm.proxy[key] = val;
+    } catch (e) {}
+  }
+
   // 确保 Vue 组件中 productId 存在，防止验证码后数据丢失
   function ensureProductId() {
     const pid = getProductId();
-    if (!pid) {
-      log('[Vue] 没有捕获到 productId，无法恢复');
-      return;
-    }
+    if (!pid) { log('[Vue] 没有捕获到 productId，无法恢复'); return; }
 
-    const app = document.querySelector('#app');
-    const vue = app?.__vue__;
-    if (!vue) return;
+    const vr = getVueRoot();
+    if (!vr) { log('[Vue] 未检测到 Vue 实例'); return; }
 
     let fixed = 0;
-    const walk = (vm, depth) => {
-      if (depth > 10) return;
-      if (vm.$data) {
-        // 搜索所有包含 productId 相关字段的组件，强制设置
-        for (const key of Object.keys(vm.$data)) {
-          if (/product.?id/i.test(key) && !vm.$data[key]) {
-            vm[key] = _capturedProductId;
-            fixed++;
-            log(`[Vue] 已设置 ${key}=${_capturedProductId}`);
-          }
+    // 第一遍：只修复空值字段
+    walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+      const data = getVMData(vm, ver);
+      for (const key of Object.keys(data)) {
+        if (/product.?id/i.test(key) && !data[key]) {
+          setVMProp(vm, ver, key, pid);
+          fixed++;
+          log(`[Vue${ver}] 已设置 ${key}=${pid}`);
         }
       }
-      for (const child of (vm.$children || [])) walk(child, depth + 1);
-    };
-    walk(vue, 0);
+    });
 
     if (fixed === 0) {
-      // 没找到空的 productId 字段，尝试通过 $set 或直接赋值
       log('[Vue] 未找到空的 productId 字段，尝试广搜...');
-      const walkAll = (vm, depth) => {
-        if (depth > 10 || fixed > 0) return;
-        if (vm.$data) {
-          const keys = Object.keys(vm.$data);
-          // 找到有 productId 字段的组件（不管是否为空）
-          for (const key of keys) {
-            if (/product.?id/i.test(key)) {
-              vm[key] = _capturedProductId;
-              fixed++;
-              log(`[Vue] 强制设置 ${key}=${_capturedProductId}`);
-              return;
-            }
+      // 第二遍：找到任意 productId 字段强制覆盖
+      walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+        if (fixed > 0) return;
+        const data = getVMData(vm, ver);
+        for (const key of Object.keys(data)) {
+          if (/product.?id/i.test(key)) {
+            setVMProp(vm, ver, key, pid);
+            fixed++;
+            log(`[Vue${ver}] 强制设置 ${key}=${pid}`);
+            return;
           }
         }
-        for (const child of (vm.$children || [])) walkAll(child, depth + 1);
-      };
-      walkAll(vue, 0);
+      });
     }
   }
 
   // 抢购成功后，如果支付弹窗没自动弹出，直接操作 Vue 组件
   function forcePayDialog() {
-    const app = document.querySelector('#app');
-    const vue = app?.__vue__;
-    if (!vue) return;
+    const vr = getVueRoot();
+    if (!vr) return;
 
     let payComp = null;
-    const find = (vm, depth) => {
-      if (depth > 8) return;
-      if (vm.$data && 'payDialogVisible' in vm.$data) { payComp = vm; return; }
-      for (const child of (vm.$children || [])) { find(child, depth + 1); if (payComp) return; }
-    };
-    find(vue, 0);
+    walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+      if (payComp) return;
+      const data = getVMData(vm, ver);
+      if ('payDialogVisible' in data) payComp = { vm, ver };
+    });
 
     if (!payComp) { log('[Vue] 未找到支付组件'); return; }
-    if (payComp.payDialogVisible) { log('[Vue] 支付弹窗已显示'); return; }
+    const data = getVMData(payComp.vm, payComp.ver);
+    if (data.payDialogVisible) { log('[Vue] 支付弹窗已显示'); return; }
 
-    payComp.payDialogVisible = true;
-    log('[Vue] 已直接设置 payDialogVisible=true');
+    setVMProp(payComp.vm, payComp.ver, 'payDialogVisible', true);
+    log(`[Vue${payComp.ver}] 已直接设置 payDialogVisible=true`);
   }
 
   // 定时 patch Vue 组件的 isServerBusy
@@ -1286,15 +1346,16 @@
     let attempts = 0;
     const tid = setInterval(() => {
       if (++attempts > 30) { clearInterval(tid); return; }
-      const vue = document.querySelector('#app')?.__vue__;
-      if (!vue) return;
+      const vr = getVueRoot();
+      if (!vr) return;
       let patched = 0;
-      const walk = (vm, depth) => {
-        if (depth > 8) return;
-        if (vm.$data?.isServerBusy === true) { vm.isServerBusy = false; patched++; }
-        for (const child of (vm.$children || [])) walk(child, depth + 1);
-      };
-      walk(vue, 0);
+      walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
+        const data = getVMData(vm, ver);
+        if (data.isServerBusy === true) {
+          setVMProp(vm, ver, 'isServerBusy', false);
+          patched++;
+        }
+      });
       if (patched > 0) {
         log(`[Vue] 已解除 isServerBusy (${patched}个组件)`);
         clearInterval(tid);
