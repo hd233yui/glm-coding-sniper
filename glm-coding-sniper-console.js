@@ -70,6 +70,15 @@
     setStatus('已售罄，明日再抢', '#f44');
     if (state.timerId) { clearInterval(state.timerId); state.timerId = null; }
     state.isRunning = false;
+    notify('GLM 抢购失败', '今日已售罄，明天 10:00 再来！');
+  }
+
+  function notify(title, body) {
+    try {
+      if (Notification.permission === 'granted') {
+        new Notification(title, { body, icon: 'https://open.bigmodel.cn/favicon.ico' });
+      }
+    } catch (e) {}
   }
 
   // ===== 1. 拦截 JSON.parse =====
@@ -122,6 +131,12 @@
         if (info.plan === CONFIG.targetPlan && info.period === CONFIG.billingPeriod) {
           _capturedProductId = item.productId;
           log('[捕获] productId=' + item.productId + ' (' + CONFIG.targetPlan + '/' + CONFIG.billingPeriod + ')');
+          try {
+            localStorage.setItem('glm_sniper_pid', JSON.stringify({
+              id: item.productId, plan: CONFIG.targetPlan,
+              period: CONFIG.billingPeriod, ts: Date.now(),
+            }));
+          } catch (e) {}
         }
       }
       return;
@@ -154,6 +169,16 @@
       log('[回退] 使用首个可用 productId=' + _capturedProductId);
       return _capturedProductId;
     }
+    // localStorage 兜底（12小时内有效，按 plan/period 隔离）
+    try {
+      const saved = JSON.parse(localStorage.getItem('glm_sniper_pid') || 'null');
+      if (saved && saved.id && saved.plan === CONFIG.targetPlan &&
+          saved.period === CONFIG.billingPeriod && Date.now() - saved.ts < 43200000) {
+        _capturedProductId = saved.id;
+        log('[回退] 从 localStorage 恢复 productId=' + saved.id);
+        return _capturedProductId;
+      }
+    } catch (e) {}
     return null;
   }
 
@@ -486,11 +511,13 @@
   async function preheat() {
     log('TCP 预热中...');
     try {
-      const paths = ['/favicon.ico', '/api/biz/pay/check?bizId=preheat', '/'];
-      for (const p of paths) {
-        _fetch(location.origin + p, { method: 'HEAD', cache: 'no-cache', credentials: 'include' }).catch(() => {});
-      }
-      log('预热完成 (3条连接已建立)');
+      const link = document.createElement('link');
+      link.rel = 'preconnect';
+      link.href = location.origin;
+      link.crossOrigin = 'use-credentials';
+      document.head.appendChild(link);
+      _fetch(location.origin + '/favicon.ico', { method: 'HEAD', cache: 'no-cache', credentials: 'include' }).catch(() => {});
+      log('预热完成 (preconnect + fetch HEAD)');
     } catch (e) {
       log('预热失败，不影响使用');
     }
@@ -560,7 +587,18 @@
     log('未找到' + p.label + '，使用默认');
   }
 
-  function startSnipe() {
+  function waitForProductId(maxWaitMs = 3000) {
+    if (getProductId()) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (getProductId()) { clearInterval(timer); resolve(true); }
+        else if (Date.now() - start >= maxWaitMs) { clearInterval(timer); resolve(false); }
+      }, 100);
+    });
+  }
+
+  async function startSnipe() {
     if (_confirmedSoldOut) {
       log('已确认售罄，不启动抢购');
       setStatus('已售罄，明日再抢', '#f44');
@@ -569,6 +607,18 @@
     }
     selectBilling();
     unlock();
+    if (!getProductId()) {
+      log('productId 未就绪，等待 batch-preview 响应...');
+      setStatus('等待 productId...', '#fc0');
+      const got = await waitForProductId(3000);
+      if (got) {
+        log('productId 已就绪: ' + _capturedProductId);
+        setStatus('productId 就绪，开始抢购...', '#0f8');
+      } else {
+        log('警告: 3s 内未捕获 productId，强行继续');
+        setStatus('productId 未捕获，强行继续...', '#f80');
+      }
+    }
     state.timerId = setInterval(() => {
       if (_confirmedSoldOut) {
         clearInterval(state.timerId);
@@ -702,6 +752,7 @@
           state.orderCreated = true;
           clearInterval(state.timerId);
           playBeep();
+          notify('GLM 抢购成功！', '支付二维码已出现，快去扫码！');
           setTimeout(forcePayDialog, 1500);
         }
       }
@@ -828,6 +879,19 @@
   setupAutoSnipeOnReady();
   patchVueServerBusy();
   unlock();
+
+  // 申请系统通知权限
+  if (Notification.permission === 'default') Notification.requestPermission();
+
+  // 从 localStorage 预加载上次捕获的 productId
+  try {
+    const saved = JSON.parse(localStorage.getItem('glm_sniper_pid') || 'null');
+    if (saved && saved.id && saved.plan === CONFIG.targetPlan &&
+        saved.period === CONFIG.billingPeriod && Date.now() - saved.ts < 43200000) {
+      _capturedProductId = saved.id;
+      log('[localStorage] 预加载 productId=' + saved.id);
+    }
+  } catch (e) {}
   log('脚本已启动 - 目标: ' + CONFIG.targetPlan.toUpperCase());
   log('到 ' + CONFIG.targetHour + ':00 自动抢购');
   log('页面异常自动恢复，弹窗自动冻结刷新');
