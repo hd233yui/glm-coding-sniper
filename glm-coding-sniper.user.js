@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.2.0
+// @version      1.2.1
 // @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
 // @author       qiandai
 // @match        https://open.bigmodel.cn/*
