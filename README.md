@@ -131,6 +131,23 @@ If a CAPTCHA or payment modal appears, the script detects it by content (verific
 - **Don't pay if the order shows no amount** — if the payment QR appears without a price, do not scan it
 - **Frontend only** — backend inventory validation is unaffected; if it's truly out of stock, the script can't help
 
+## Reporting Issues
+
+If the script fails to identify a plan, the overlay log will show diagnostic messages like:
+
+```
+[识别] 价格 134.1 精确匹配失败，范围兜底 → pro（原价可能已变，建议更新 PLAN_PRICE_MAP）
+[诊断] productList 中存在未知价格: [44.1, 134.1, 422.1] — 若套餐调价请更新 PLAN_PRICE_MAP
+[识别失败] 未知价格: 188, productId=xxx — 超出所有已知范围，请更新 PLAN_PRICE_MAP/PLAN_PRICE_RANGES
+```
+
+If you see any of these, please [open an issue](https://github.com/hd233yui/glm-coding-sniper/issues) and include:
+
+1. The full log lines from the overlay (screenshot or copy-paste)
+2. The plan you were trying to purchase (Lite / Pro / Max, and billing period)
+
+This helps keep `PLAN_PRICE_MAP` and `PLAN_PRICE_RANGES` up to date for everyone.
+
 ## Alternatives
 
 If you can't get it after multiple days:
@@ -262,6 +279,23 @@ API 返回 429/5xx → fetch/XHR 自动重试（最多8次，递增延迟）
 - **提前准备支付** — 把支付宝/微信打开，二维码有效期很短
 - **订单无金额不要付款** — 如果支付二维码出现但订单没有显示金额，请不要扫码
 - **脚本只改前端** — 后端库存校验不受影响，抢不到说明确实没货了
+
+## 报告问题
+
+如果脚本无法识别套餐，悬浮窗日志会显示类似以下信息：
+
+```
+[识别] 价格 134.1 精确匹配失败，范围兜底 → pro（原价可能已变，建议更新 PLAN_PRICE_MAP）
+[诊断] productList 中存在未知价格: [44.1, 134.1, 422.1] — 若套餐调价请更新 PLAN_PRICE_MAP
+[识别失败] 未知价格: 188, productId=xxx — 超出所有已知范围，请更新 PLAN_PRICE_MAP/PLAN_PRICE_RANGES
+```
+
+遇到上述日志请[提交 Issue](https://github.com/hd233yui/glm-coding-sniper/issues)，并附上：
+
+1. 悬浮窗完整日志（截图或复制粘贴）
+2. 你的目标套餐（Lite / Pro / Max，以及计费周期）
+
+这有助于及时更新 `PLAN_PRICE_MAP` 和 `PLAN_PRICE_RANGES`，让所有人受益。
 
 ## 替代方案
 
