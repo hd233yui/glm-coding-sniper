@@ -42,7 +42,7 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 
 ### Tampermonkey (Recommended)
 
-**One-click install (v1.2.5):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
+**One-click install (v1.2.6):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
 
 Or install manually:
 
@@ -120,6 +120,10 @@ If you can't get it after multiple days:
 - **International version** [z.ai](https://z.ai/subscribe) — no purchase limits, AFF + annual discount brings the price close to domestic
 - **Alibaba Cloud Bailian** — call GLM-5.1 directly on-demand, restocks daily at 9:30 AM
 
+## Author
+
+[hd233yui](https://github.com/hd233yui)
+
 ## License
 
 MIT
@@ -166,7 +170,7 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ### Tampermonkey 版（推荐）
 
-**一键安装 (v1.2.5)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
+**一键安装 (v1.2.6)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
 
 或手动安装：
 
@@ -243,6 +247,10 @@ API 返回 429/5xx → fetch/XHR 自动重试（最多8次，递增延迟）
 
 - **国际版** [z.ai](https://z.ai/subscribe) — 不限购，AFF + 包年折扣后价格接近国内
 - **阿里云百炼** — 可直接按量调用 GLM-5.1，每日 9:30 补货
+
+## 作者
+
+[hd233yui](https://github.com/hd233yui)
 
 ## License
 

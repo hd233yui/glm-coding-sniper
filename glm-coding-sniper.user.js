@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.2.5
+// @version      1.2.6
 // @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
-// @author       qiandai
+// @author       hd233yui
 // @match        https://open.bigmodel.cn/*
 // @match        https://www.bigmodel.cn/*
 // @match        https://bigmodel.cn/*
@@ -731,6 +731,24 @@
     }
   }
 
+  // ==================== 4c. 等待 productId 捕获 ====================
+  // 若 batch-preview 响应还没回来，最多等 maxWaitMs 毫秒再继续
+  function waitForProductId(maxWaitMs = 3000) {
+    if (getProductId()) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (getProductId()) {
+          clearInterval(timer);
+          resolve(true);
+        } else if (Date.now() - start >= maxWaitMs) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 100);
+    });
+  }
+
   // ==================== 5. 核心抢购逻辑 ====================
   function selectBillingPeriod() {
     const periodKeywords = {
@@ -754,7 +772,7 @@
     return false;
   }
 
-  function startSnipe() {
+  async function startSnipe() {
     // 已确认售罄时不启动抢购
     if (_confirmedSoldOut) {
       log('已确认售罄，不启动抢购');
@@ -763,10 +781,24 @@
       return;
     }
 
-    // 先选择计费周期
+    // 先选择计费周期（点击会触发 batch-preview API，进而捕获 productId）
     selectBillingPeriod();
     // 移除所有disabled属性
     removeAllDisabled();
+
+    // 若 productId 尚未捕获，等待最多 3 秒
+    if (!getProductId()) {
+      log('productId 未就绪，等待 batch-preview 响应...');
+      setStatus('等待 productId...', '#ffcc00');
+      const got = await waitForProductId(3000);
+      if (got) {
+        log(`productId 已就绪: ${_capturedProductId}`);
+        setStatus('productId 就绪，开始抢购...', '#00ff88');
+      } else {
+        log('警告: 3s 内未捕获 productId，强行继续（可能报错）');
+        setStatus('productId 未捕获，强行继续...', '#ff8800');
+      }
+    }
 
     // 开始循环尝试点击
     state.timerId = setInterval(() => {
