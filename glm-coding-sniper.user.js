@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.2.1
+// @version      1.2.2
 // @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
 // @author       qiandai
 // @match        https://open.bigmodel.cn/*
@@ -108,6 +108,9 @@
 
   // ==================== 2. 拦截 fetch + XHR (自动重试 + soldOut修改) ====================
 
+  // 捕获的 productId (从 API 响应或请求中提取)
+  let _capturedProductId = null;
+
   // --- 2a. fetch 拦截 ---
   const originalFetch = window.fetch;
   window.fetch = async function (...args) {
@@ -121,8 +124,30 @@
       args[1] = { ...args[1], headers };
     }
 
-    let response = await originalFetch.apply(this, args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+
+    // preview 请求: 捕获 productId + 注入缺失的 productId
+    if (/preview/i.test(url) && args[1]?.body) {
+      try {
+        let body = args[1].body;
+        let bodyObj = typeof body === 'string' ? JSON.parse(body) : null;
+        if (bodyObj) {
+          // 捕获 productId
+          if (bodyObj.productId) {
+            _capturedProductId = bodyObj.productId;
+            log(`[捕获] productId=${_capturedProductId}`);
+          }
+          // 注入缺失的 productId
+          if (!bodyObj.productId && _capturedProductId) {
+            bodyObj.productId = _capturedProductId;
+            args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+            log(`[注入] 已补充 productId=${_capturedProductId}`);
+          }
+        }
+      } catch (e) {}
+    }
+
+    let response = await originalFetch.apply(this, args);
 
     // 抢购窗口内，失败请求自动重试
     if (isNearTargetTime() && [429, 500, 502, 503].includes(response.status)) {
@@ -134,6 +159,41 @@
           if (response.ok) { console.log('[GLM Sniper] fetch 重试成功!'); break; }
         } catch (e) {}
       }
+    }
+
+    // 从产品列表 API 响应中捕获 productId
+    if (!_capturedProductId && /coding|plan|product|package/i.test(url)) {
+      try {
+        const clone = response.clone();
+        const text = await clone.text();
+        // 匹配目标套餐的 productId
+        const planKey = CONFIG.targetPlan.toLowerCase();
+        const parsed = JSON.parse(text);
+        const findProductId = (obj) => {
+          if (!obj || typeof obj !== 'object') return null;
+          if (Array.isArray(obj)) {
+            for (const item of obj) {
+              const name = (item.name || item.title || item.planName || item.planType || '').toLowerCase();
+              if (name.includes(planKey) && (item.productId || item.id)) {
+                return item.productId || item.id;
+              }
+              const found = findProductId(item);
+              if (found) return found;
+            }
+          } else {
+            for (const v of Object.values(obj)) {
+              const found = findProductId(v);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const found = findProductId(parsed);
+        if (found) {
+          _capturedProductId = found;
+          log(`[捕获] 从API响应获取 productId=${_capturedProductId}`);
+        }
+      } catch (e) {}
     }
 
     // soldOut 拦截

@@ -42,7 +42,7 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 
 ### Tampermonkey (Recommended)
 
-**One-click install (v1.2.1):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
+**One-click install (v1.2.2):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
 
 Or install manually:
 
@@ -166,7 +166,7 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ### Tampermonkey 版（推荐）
 
-**一键安装 (v1.2.1)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
+**一键安装 (v1.2.2)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
 
 或手动安装：
 

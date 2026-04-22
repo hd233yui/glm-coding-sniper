@@ -71,6 +71,8 @@
   }
 
   // ===== 2. 拦截 fetch (指纹随机化 + 自动重试 + soldOut修改 + check校验) =====
+  let _capturedProductId = null;
+
   const _fetch = window.fetch;
   window.fetch = async function (...args) {
     // 请求指纹随机化
@@ -83,8 +85,27 @@
       args[1] = { ...args[1], headers };
     }
 
-    let res = await _fetch.apply(this, args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+
+    // preview 请求: 捕获 productId + 注入缺失的 productId
+    if (/preview/i.test(url) && args[1]?.body) {
+      try {
+        let bodyObj = typeof args[1].body === 'string' ? JSON.parse(args[1].body) : null;
+        if (bodyObj) {
+          if (bodyObj.productId) {
+            _capturedProductId = bodyObj.productId;
+            log('[捕获] productId=' + _capturedProductId);
+          }
+          if (!bodyObj.productId && _capturedProductId) {
+            bodyObj.productId = _capturedProductId;
+            args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+            log('[注入] 已补充 productId=' + _capturedProductId);
+          }
+        }
+      } catch (e) {}
+    }
+
+    let res = await _fetch.apply(this, args);
 
     // 抢购窗口内，失败请求自动重试
     if (isNearTarget() && [429, 500, 502, 503].includes(res.status)) {
@@ -96,6 +117,31 @@
           if (res.ok) { console.log('[GLM Sniper] fetch 重试成功!'); break; }
         } catch (e) {}
       }
+    }
+
+    // 从产品列表 API 响应中捕获 productId
+    if (!_capturedProductId && /coding|plan|product|package/i.test(url)) {
+      try {
+        const clone = res.clone();
+        const text = await clone.text();
+        const planKey = CONFIG.targetPlan.toLowerCase();
+        const parsed = JSON.parse(text);
+        const findPid = (obj) => {
+          if (!obj || typeof obj !== 'object') return null;
+          if (Array.isArray(obj)) {
+            for (const item of obj) {
+              const name = (item.name || item.title || item.planName || item.planType || '').toLowerCase();
+              if (name.includes(planKey) && (item.productId || item.id)) return item.productId || item.id;
+              const f = findPid(item); if (f) return f;
+            }
+          } else {
+            for (const v of Object.values(obj)) { const f = findPid(v); if (f) return f; }
+          }
+          return null;
+        };
+        const found = findPid(parsed);
+        if (found) { _capturedProductId = found; log('[捕获] 从API响应获取 productId=' + found); }
+      } catch (e) {}
     }
 
     if (!isNearTarget()) return res;
