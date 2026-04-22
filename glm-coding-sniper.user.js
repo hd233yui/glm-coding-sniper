@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GLM Coding Plan Pro 自动抢购
 // @namespace    https://bigmodel.cn
-// @version      1.2.6
+// @version      1.2.7
 // @description  每天10:00自动抢购GLM Coding Plan Pro套餐，拦截售罄+自动点击+错误恢复+弹窗保护+自动重触发
 // @author       hd233yui
 // @match        https://open.bigmodel.cn/*
@@ -97,6 +97,15 @@
     // 停止所有正在运行的抢购逻辑
     if (state.timerId) { clearInterval(state.timerId); state.timerId = null; }
     state.isRunning = false;
+    notify('GLM 抢购失败', '今日已售罄，明天 10:00 再来！');
+  }
+
+  function notify(title, body) {
+    try {
+      if (Notification.permission === 'granted') {
+        new Notification(title, { body, icon: 'https://open.bigmodel.cn/favicon.ico' });
+      }
+    } catch (e) {}
   }
 
   const originalParse = JSON.parse;
@@ -164,6 +173,13 @@
           _capturedProductId = item.productId;
           _capturedProductInfo = item;
           log(`[捕获] productId=${item.productId} (${CONFIG.targetPlan}/${CONFIG.billingPeriod})`);
+          // 持久化到 localStorage，刷新后立即可用，无需等 API 响应
+          try {
+            localStorage.setItem('glm_sniper_pid', JSON.stringify({
+              id: item.productId, plan: CONFIG.targetPlan,
+              period: CONFIG.billingPeriod, ts: Date.now(),
+            }));
+          } catch (e) {}
         }
       }
       if (Object.keys(_allProductIds).length > 0 && !_capturedProductId) {
@@ -209,6 +225,16 @@
       log(`[回退] 使用首个可用 productId=${_capturedProductId} (${entries[0][0]})`);
       return _capturedProductId;
     }
+    // localStorage 兜底：读取上次捕获的值（12小时内有效）
+    try {
+      const saved = JSON.parse(localStorage.getItem('glm_sniper_pid') || 'null');
+      if (saved && saved.id && saved.plan === CONFIG.targetPlan &&
+          saved.period === CONFIG.billingPeriod && Date.now() - saved.ts < 43200000) {
+        _capturedProductId = saved.id;
+        log(`[回退] 从 localStorage 恢复 productId=${saved.id}`);
+        return _capturedProductId;
+      }
+    } catch (e) {}
     return null;
   }
 
@@ -721,11 +747,17 @@
     if (location.hostname !== 'open.bigmodel.cn') return;
     log('TCP 预热中...');
     try {
-      const paths = ['/favicon.ico', '/api/biz/pay/check?bizId=preheat', '/'];
-      for (const p of paths) {
-        originalFetch(location.origin + p, { method: 'HEAD', cache: 'no-cache', credentials: 'include' }).catch(() => {});
-      }
-      log('预热完成 (3条连接已建立)');
+      // preconnect 由浏览器原生建立，比 fetch HEAD 更早、更高效
+      ['https://open.bigmodel.cn'].forEach(origin => {
+        const link = document.createElement('link');
+        link.rel = 'preconnect';
+        link.href = origin;
+        link.crossOrigin = 'use-credentials';
+        document.head.appendChild(link);
+      });
+      // 保留一个 fetch HEAD 触发实际 HTTP 连接（preconnect 仅建立 TCP/TLS）
+      originalFetch(location.origin + '/favicon.ico', { method: 'HEAD', cache: 'no-cache', credentials: 'include' }).catch(() => {});
+      log('预热完成 (preconnect + fetch HEAD)');
     } catch (e) {
       log('预热失败，不影响使用');
     }
@@ -1020,6 +1052,7 @@
               state.orderCreated = true;
               clearInterval(state.timerId);
               playAlert();
+              notify('GLM 抢购成功！', '支付二维码已出现，快去扫码！');
               setTimeout(forcePayDialog, 1500);
             }
           }
@@ -1268,6 +1301,19 @@
     createOverlay();
     setupMutationObserver();
     setupAutoSnipeOnReady();   // 页面恢复后自动触发抢购
+
+    // 申请系统通知权限
+    if (Notification.permission === 'default') Notification.requestPermission();
+
+    // 从 localStorage 预加载上次捕获的 productId（刷新后立即可用）
+    try {
+      const saved = JSON.parse(localStorage.getItem('glm_sniper_pid') || 'null');
+      if (saved && saved.id && saved.plan === CONFIG.targetPlan &&
+          saved.period === CONFIG.billingPeriod && Date.now() - saved.ts < 43200000) {
+        _capturedProductId = saved.id;
+        log(`[localStorage] 预加载 productId=${saved.id}`);
+      }
+    } catch (e) {}
 
     // 延迟校准时间 + patch Vue isServerBusy + 定期捕获 productId
     setTimeout(calibrateTime, 2000);
