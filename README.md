@@ -47,6 +47,7 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 - **productId Persistence** — Saves the captured `productId` to `localStorage` (12h TTL, isolated by plan/period); restored immediately on page refresh without waiting for API response, eliminating race conditions
 - **System Notifications** — Sends a browser notification when sold out or when the payment QR appears, so you don't miss it even if the tab is in the background
 - **Preconnect Warm-up** — Injects `<link rel="preconnect">` before the rush to establish TCP/TLS connections at the browser level, faster than fetch HEAD
+- **Resilient Plan Matching** — Identifies plans by price with exact match first, then falls back to non-overlapping price ranges (Lite: ¥30–80, Pro: ¥100–200, Max: ¥350–550), so discounted prices (e.g. 9折) still match correctly
 
 ## Two Versions
 
@@ -59,7 +60,7 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 
 ### Tampermonkey (Recommended)
 
-**One-click install (v1.3.0):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
+**One-click install (v1.3.1):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
 
 Or install manually:
 
@@ -178,6 +179,7 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 - **productId 持久化** — 捕获的 productId 写入 `localStorage`（12小时有效，按套餐/周期隔离），页面刷新后立即恢复，无需等待 API 响应，彻底解决时序竞争问题
 - **系统通知** — 售罄或支付二维码出现时发送浏览器系统通知，标签页在后台也不会错过
 - **Preconnect 预热** — 抢购前注入 `<link rel="preconnect">` 由浏览器原生建立 TCP/TLS 连接，比 fetch HEAD 更早更高效
+- **套餐价格兜底匹配** — 先通过原价精确匹配套餐，失败时自动降级为价格区间匹配（Lite: ¥30–80，Pro: ¥100–200，Max: ¥350–550），即使 `monthlyOriginalAmount` 为折后价（如包季9折 ¥134.1）也能正确识别
 
 ## 两个版本
 
@@ -190,7 +192,7 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ### Tampermonkey 版（推荐）
 
-**一键安装 (v1.3.0)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
+**一键安装 (v1.3.1)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
 
 或手动安装：
 

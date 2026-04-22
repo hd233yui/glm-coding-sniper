@@ -101,6 +101,15 @@
   // monthly: 无折扣, quarterly: campaignName含"包季", yearly: 含"包年"
   let _allProductIds = {};
   const PLAN_PRICE_MAP = { lite: 49, pro: 149, max: 469 };
+  // 价格范围兜底：当 monthlyOriginalAmount 为折后价时精确匹配会失败，用范围兜底
+  // 三档之间差距足够大，范围不会重叠，即使打折也安全
+  const PLAN_PRICE_RANGES = { lite: [30, 80], pro: [100, 200], max: [350, 550] };
+
+  // 周期关键词表：覆盖常见中文表达，防止平台文案微调导致识别失败
+  const PERIOD_PATTERNS = {
+    quarterly: ['包季', '季度', '季卡', '3个月', '三个月'],
+    yearly:    ['包年', '年度', '年卡', '12个月', '一年'],
+  };
 
   function identifyPlanFromProduct(item) {
     const price = item.monthlyOriginalAmount;
@@ -108,20 +117,46 @@
     for (const [name, p] of Object.entries(PLAN_PRICE_MAP)) {
       if (price === p) { plan = name; break; }
     }
-    if (!plan) return null;
-    let period = 'monthly';
-    const campaigns = item.campaignDiscountDetails || [];
-    for (const c of campaigns) {
-      const cn = c.campaignName || '';
-      if (cn.includes('包季')) { period = 'quarterly'; break; }
-      if (cn.includes('包年')) { period = 'yearly'; break; }
+    if (!plan) {
+      // 精确匹配失败（可能是折后价），用范围兜底
+      for (const [name, [min, max]] of Object.entries(PLAN_PRICE_RANGES)) {
+        if (price >= min && price <= max) { plan = name; break; }
+      }
+      if (plan) {
+        log('[识别] 价格 ' + price + ' 精确匹配失败，范围兜底 → ' + plan + '（原价可能已变，建议更新 PLAN_PRICE_MAP）');
+      } else {
+        log('[识别失败] 未知价格: ' + price + ', productId=' + item.productId + ' — 超出所有已知范围，请更新 PLAN_PRICE_MAP/PLAN_PRICE_RANGES');
+        return null;
+      }
     }
+    let period = 'monthly';
+    let matchedCampaign = '';
+    const campaigns = item.campaignDiscountDetails || [];
+    outer: for (const c of campaigns) {
+      const cn = c.campaignName || '';
+      for (const [p, patterns] of Object.entries(PERIOD_PATTERNS)) {
+        if (patterns.some(kw => cn.includes(kw))) {
+          period = p;
+          matchedCampaign = cn;
+          break outer;
+        }
+      }
+    }
+    log('[识别] 价格=' + price + ' → ' + plan + ' | campaignName="' + matchedCampaign + '" → ' + period + ' | productId=' + item.productId);
     return { plan, period };
   }
 
   function captureProductIdFromData(obj) {
     if (!obj || typeof obj !== 'object') return;
     if (obj.productList && Array.isArray(obj.productList)) {
+      // 未命中 PLAN_PRICE_MAP 时，输出全部价格集合辅助诊断
+      const unknownPrices = obj.productList
+        .filter(item => item && !Object.values(PLAN_PRICE_MAP).includes(item.monthlyOriginalAmount))
+        .map(item => item.monthlyOriginalAmount);
+      if (unknownPrices.length > 0) {
+        log('[诊断] productList 中存在未知价格: [' + unknownPrices.join(', ') + '] — 若套餐调价请更新 PLAN_PRICE_MAP');
+      }
+
       for (const item of obj.productList) {
         if (!item || !item.productId) continue;
         const info = identifyPlanFromProduct(item);
@@ -130,7 +165,6 @@
         _allProductIds[key] = item.productId;
         if (info.plan === CONFIG.targetPlan && info.period === CONFIG.billingPeriod) {
           _capturedProductId = item.productId;
-          log('[捕获] productId=' + item.productId + ' (' + CONFIG.targetPlan + '/' + CONFIG.billingPeriod + ')');
           try {
             localStorage.setItem('glm_sniper_pid', JSON.stringify({
               id: item.productId, plan: CONFIG.targetPlan,
@@ -138,6 +172,10 @@
             }));
           } catch (e) {}
         }
+      }
+      if (Object.keys(_allProductIds).length > 0 && !_capturedProductId) {
+        log('[捕获] 找到' + Object.keys(_allProductIds).length + '个产品，但未匹配目标套餐 ' + CONFIG.targetPlan + '/' + CONFIG.billingPeriod);
+        log('[诊断] 已捕获套餐: [' + Object.keys(_allProductIds).join(', ') + ']');
       }
       return;
     }
@@ -163,11 +201,9 @@
         return pid;
       }
     }
-    const entries = Object.entries(_allProductIds);
-    if (entries.length > 0) {
-      _capturedProductId = entries[0][1];
-      log('[回退] 使用首个可用 productId=' + _capturedProductId);
-      return _capturedProductId;
+    // 任意回退已移除：防止静默下错套餐。若无精确匹配或同套餐匹配，返回 null 并警告。
+    if (Object.keys(_allProductIds).length > 0) {
+      log('[警告] 已捕获产品但无法匹配 ' + CONFIG.targetPlan + '/' + CONFIG.billingPeriod + '，拒绝回退');
     }
     // localStorage 兜底（12小时内有效，按 plan/period 隔离）
     try {
@@ -253,28 +289,12 @@
       }
     }
 
-    // 从产品列表 API 响应中捕获 productId
+    // 从 API 响应中捕获 productId（复用价格映射策略，与 JSON.parse 拦截保持一致）
     if (!_capturedProductId && /coding|plan|product|package/i.test(url)) {
       try {
         const clone = res.clone();
-        const text = await clone.text();
-        const planKey = CONFIG.targetPlan.toLowerCase();
-        const parsed = JSON.parse(text);
-        const findPid = (obj) => {
-          if (!obj || typeof obj !== 'object') return null;
-          if (Array.isArray(obj)) {
-            for (const item of obj) {
-              const name = (item.name || item.title || item.planName || item.planType || '').toLowerCase();
-              if (name.includes(planKey) && (item.productId || item.id)) return item.productId || item.id;
-              const f = findPid(item); if (f) return f;
-            }
-          } else {
-            for (const v of Object.values(obj)) { const f = findPid(v); if (f) return f; }
-          }
-          return null;
-        };
-        const found = findPid(parsed);
-        if (found) { _capturedProductId = found; log('[捕获] 从API响应获取 productId=' + found); }
+        const parsed = await clone.json();
+        captureProductIdFromData(parsed?.data || parsed);
       } catch (e) {}
     }
 
