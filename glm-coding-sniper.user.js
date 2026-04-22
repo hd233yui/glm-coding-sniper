@@ -629,6 +629,18 @@
         <div style="color:#f44;font-size:12px;margin-top:6px;font-weight:bold;line-height:1.4;">
           ⚠ 如果订单没有显示需要支付的金额，请不要扫码付款！
         </div>
+        <div style="margin-top:6px;">
+          <button id="glm-notif-btn" onclick="(function(){
+            if(Notification.permission==='granted'){return;}
+            Notification.requestPermission().then(p=>{
+              const btn=document.getElementById('glm-notif-btn');
+              if(btn) btn.textContent=p==='granted'?'🔔 通知已开启':'🔕 通知被拒绝';
+            });
+          })()" style="
+            background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);
+            color:#ccc;padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer;
+          ">🔔 开启通知</button>
+        </div>
         <div id="glm-log" style="
           margin-top: 8px;
           max-height: 120px;
@@ -752,7 +764,6 @@
         const link = document.createElement('link');
         link.rel = 'preconnect';
         link.href = origin;
-        link.crossOrigin = 'use-credentials';
         document.head.appendChild(link);
       });
       // 保留一个 fetch HEAD 触发实际 HTTP 连接（preconnect 仅建立 TCP/TLS）
@@ -1302,8 +1313,14 @@
     setupMutationObserver();
     setupAutoSnipeOnReady();   // 页面恢复后自动触发抢购
 
-    // 申请系统通知权限
-    if (Notification.permission === 'default') Notification.requestPermission();
+    // 通知权限：不自动请求（避免被浏览器静默拒绝），由用户点击悬浮窗按钮触发
+    // 已授权时更新按钮文字
+    if (Notification.permission === 'granted') {
+      setTimeout(() => {
+        const btn = document.getElementById('glm-notif-btn');
+        if (btn) btn.textContent = '🔔 通知已开启';
+      }, 500);
+    }
 
     // 从 localStorage 预加载上次捕获的 productId（刷新后立即可用）
     try {
