@@ -1,5 +1,19 @@
 > **⚠️ NOTICE / 提示：This script is still in testing phase. Use at your own risk. / 当前脚本仍处于测试阶段，使用风险自负。**
 
+---
+
+> **⚠️ DISCLAIMER / 免责声明**
+>
+> This script modifies frontend state to work around UI-level restrictions . These behaviors may be detected by the platform's risk control systems and could result in **account flagging, rate limiting, or suspension**.
+>
+> **Use entirely at your own risk.** The author assumes no responsibility for any consequences, including but not limited to account restrictions or financial loss.
+>
+> ---
+>
+> 本脚本通过修改前端状态绕过界面级限制。上述行为可能被平台风控系统识别，导致**账号被标记、限流加重或封禁**。
+>
+> **使用本脚本风险完全由您自行承担。** 作者不对任何后果负责，包括但不限于账号受限或财产损失。
+
 [English](#english) | [中文](#中文)
 
 ---
