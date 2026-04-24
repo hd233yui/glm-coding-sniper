@@ -48,7 +48,8 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 ## Features
 
 - **Sold-out Bypass** — Intercepts `soldOut` flags during the purchase window (9:59 ~ 10:30) to enable buttons
-- **Plan Selection** — Defaults to Pro + Quarterly billing (configurable via `targetPlan` and `billingPeriod`)
+- **Fallback Plan Queue** — Configure a priority list of plans; if the primary is sold out, the script automatically falls back to the next candidate in order, cycling through all options before giving up
+- **Plan Selection** — Defaults to Pro + Quarterly billing (configurable via `planPriority`)
 - **Precision Timing** — Auto-clicks the purchase button at 10:00:00 with 100ms retry interval, up to 300 retries (30 seconds per round)
 - **Auto Confirm** — Automatically clicks confirm/pay buttons in popups
 - **QR Detection** — Plays an alert sound when the payment QR code appears
@@ -77,7 +78,7 @@ GLM Coding Plan releases limited stock at 10:00 AM (UTC+8) daily and sells out w
 
 ### Tampermonkey (Recommended)
 
-**One-click install (v1.3.1):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
+**One-click install (v1.4.0):** Install [Tampermonkey](https://www.tampermonkey.net/) first, then click 👉 [**Install Script**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey will automatically pop up the install page.
 
 Or install manually:
 
@@ -102,8 +103,13 @@ Edit the `CONFIG` object at the top of the script:
 
 ```javascript
 const CONFIG = {
-  targetPlan: 'pro',           // 'lite' | 'pro' | 'max'
-  billingPeriod: 'quarterly',  // 'monthly' | 'quarterly' | 'yearly'
+  // Priority list of plans to attempt, in order.
+  // The first entry is the primary target; subsequent entries are fallbacks.
+  // Each entry: { plan: 'lite'|'pro'|'max', billingPeriod: 'monthly'|'quarterly'|'yearly' }
+  planPriority: [
+    { plan: 'pro', billingPeriod: 'quarterly' },
+    // { plan: 'lite', billingPeriod: 'quarterly' }, // fallback (uncomment to enable)
+  ],
   targetHour: 10,              // target hour
   targetMinute: 0,             // target minute
   advanceMs: 200,              // ms to start early (compensate network latency)
@@ -111,6 +117,19 @@ const CONFIG = {
   maxRetries: 300,             // max retry attempts per round (300 * 100ms = 30s)
 };
 ```
+
+### Fallback Plan Example
+
+To try Pro quarterly first, then fall back to Lite quarterly:
+
+```javascript
+planPriority: [
+  { plan: 'pro', billingPeriod: 'quarterly' },
+  { plan: 'lite', billingPeriod: 'quarterly' },
+],
+```
+
+The script cycles through all configured plans. It only stops when every plan has been confirmed sold out for 3 consecutive full cycles — this prevents false positives from brief API fluctuations.
 
 ## How It Works
 
@@ -142,6 +161,7 @@ If a CAPTCHA or payment modal appears, the script detects it by content (verific
 
 ## Important Notes
 
+- **Overlay not appearing?** — Reload the tab (Ctrl+R). The script runs on all `open.bigmodel.cn` pages so it works regardless of how you navigate to the purchase page.
 - **Buttons stay disabled outside the purchase window** — sold-out interception only activates during 9:59~11:00
 - **Don't open multiple tabs** — one is enough, more tabs cause lag
 - **Have your payment app ready** — QR codes expire quickly
@@ -180,7 +200,8 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 ## 功能
 
 - **售罄状态拦截** — 在抢购窗口期（9:59 ~ 10:30）自动将 `soldOut` 改为 `false`，让按钮可点击
-- **自动选择套餐** — 默认选择 Pro + 连续包季（可通过 `targetPlan` 和 `billingPeriod` 配置）
+- **候补套餐队列** — 可配置多个候补套餐，首选售罄后自动按优先级切换到下一个，走完一整圈仍全售罄才放弃
+- **自动选择套餐** — 默认选择 Pro + 连续包季（可通过 `planPriority` 配置）
 - **精准定时** — 10:00:00 自动点击购买按钮，100ms 间隔重试，每轮最多 300 次（30秒）
 - **自动确认** — 自动点击弹窗中的确认/支付按钮
 - **二维码检测** — 检测到支付二维码后播放提示音
@@ -209,7 +230,7 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ### Tampermonkey 版（推荐）
 
-**一键安装 (v1.3.1)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
+**一键安装 (v1.4.0)：** 先安装 [Tampermonkey](https://www.tampermonkey.net/)，然后点击 👉 [**安装脚本**](https://github.com/hd233yui/glm-coding-sniper/raw/master/glm-coding-sniper.user.js) — Tampermonkey 会自动弹出安装页面。
 
 或手动安装：
 
@@ -234,8 +255,12 @@ GLM Coding Plan 每天 10:00 限量放货，几秒售罄，纯手动根本抢不
 
 ```javascript
 const CONFIG = {
-  targetPlan: 'pro',           // 'lite' | 'pro' | 'max'
-  billingPeriod: 'quarterly',  // 'monthly' | 'quarterly' | 'yearly'
+  // 套餐优先级列表，按顺序尝试；第一个为首选，后续为候补
+  // 每项: { plan: 'lite'|'pro'|'max', billingPeriod: 'monthly'|'quarterly'|'yearly' }
+  planPriority: [
+    { plan: 'pro', billingPeriod: 'quarterly' },
+    // { plan: 'lite', billingPeriod: 'quarterly' }, // 候补（取消注释以启用）
+  ],
   targetHour: 10,              // 抢购小时
   targetMinute: 0,             // 抢购分钟
   advanceMs: 200,              // 提前多少ms开始（补偿网络延迟）
@@ -243,6 +268,19 @@ const CONFIG = {
   maxRetries: 300,             // 每轮最大重试次数（300次 * 100ms = 30秒）
 };
 ```
+
+### 候补套餐配置示例
+
+先抢 Pro 包季，售罄后自动切换到 Lite 包季：
+
+```javascript
+planPriority: [
+  { plan: 'pro', billingPeriod: 'quarterly' },
+  { plan: 'lite', billingPeriod: 'quarterly' },
+],
+```
+
+脚本会循环遍历所有已配置套餐。只有当所有套餐连续 3 整圈均已确认售罄时才会停止，单次 API 波动不会触发放弃，避免误判。
 
 ## 工作原理
 
@@ -274,6 +312,7 @@ API 返回 429/5xx → fetch/XHR 自动重试（最多8次，递增延迟）
 
 ## 注意事项
 
+- **悬浮窗没有出现？** — 刷新页面（Ctrl+R）。脚本在整个 `open.bigmodel.cn` 域名下运行，无论从哪里导航到购买页都能正常工作。
 - **非抢购时段点击无效** — 售罄拦截只在 9:59~11:00 窗口期生效，其他时间按钮保持原样
 - **不要开多个标签页** — 一个就够，多了浏览器卡反而慢
 - **提前准备支付** — 把支付宝/微信打开，二维码有效期很短
