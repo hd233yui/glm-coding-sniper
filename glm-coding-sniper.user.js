@@ -231,9 +231,9 @@
           log(`[探测] 所有已配置套餐均售罄 (${configuredKeys.join(', ')})，停止抢购`);
           confirmSoldOut();
         } else if (currentPlanSoldOut === true) {
-          // 当前套餐售罄但有候补有货或未知，交由候补机制处理，不直接 confirmSoldOut
-          log(`[探测] 当前套餐 ${currentKey} 售罄，触发候补切换...`);
-          tryNextPlan();
+          // 服务端明确确认售罄，直接停止，无需等候补机制走完 3 轮
+          log(`[探测] 服务端确认 ${currentKey} 售罄，停止抢购`);
+          confirmSoldOut();
         } else if (currentPlanSoldOut === false) {
           log(`[探测] 服务端确认 ${currentKey} 有货，继续抢购`);
         } else {
@@ -550,13 +550,18 @@
                 _capturedProductId = bodyObj.productId;
                 log(`[捕获] productId=${_capturedProductId}`);
               } else if (bodyObj.productId !== _capturedProductId) {
-                // 请求中的 productId 与目标套餐不符（前端默认选了其他套餐），替换为正确的
-                log(`[修正] productId 不符: ${bodyObj.productId} → ${_capturedProductId}`);
-                bodyObj.productId = _capturedProductId;
-                args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+                if (_forcePayDialogCalled || state.orderCreated) {
+                  // 支付流程已进行中，不修正 productId，避免弹窗数据错乱
+                  log(`[跳过修正] 支付进行中，保留 productId=${bodyObj.productId}`);
+                } else {
+                  // 请求中的 productId 与目标套餐不符（前端默认选了其他套餐），替换为正确的
+                  log(`[修正] productId 不符: ${bodyObj.productId} → ${_capturedProductId}`);
+                  bodyObj.productId = _capturedProductId;
+                  args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+                }
               }
-            } else if (_capturedProductId) {
-              // 请求中没有 productId，注入
+            } else if (_capturedProductId && !_forcePayDialogCalled && !state.orderCreated) {
+              // 请求中没有 productId，注入（仅在支付未开始前注入）
               bodyObj.productId = _capturedProductId;
               args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
               log(`[注入] 已补充 productId=${_capturedProductId}`);
@@ -688,11 +693,15 @@
                 _capturedProductId = bodyObj.productId;
                 log(`[捕获] productId=${_capturedProductId} (XHR)`);
               } else if (bodyObj.productId !== _capturedProductId) {
-                log(`[修正] productId 不符: ${bodyObj.productId} → ${_capturedProductId} (XHR)`);
-                bodyObj.productId = _capturedProductId;
-                args[0] = JSON.stringify(bodyObj);
+                if (_forcePayDialogCalled || state.orderCreated) {
+                  log(`[跳过修正] 支付进行中，保留 productId=${bodyObj.productId} (XHR)`);
+                } else {
+                  log(`[修正] productId 不符: ${bodyObj.productId} → ${_capturedProductId} (XHR)`);
+                  bodyObj.productId = _capturedProductId;
+                  args[0] = JSON.stringify(bodyObj);
+                }
               }
-            } else if (_capturedProductId) {
+            } else if (_capturedProductId && !_forcePayDialogCalled && !state.orderCreated) {
               bodyObj.productId = _capturedProductId;
               args[0] = JSON.stringify(bodyObj);
               log(`[注入] 已补充 productId=${_capturedProductId} (XHR)`);
@@ -1639,6 +1648,9 @@
         const vr = getVueRoot();
         if (!vr) return;
         let patched = 0;
+        // 支付弹窗已打开（有真实订单数据），不再清除 isServerBusy
+        // 否则 555 响应后平台标记 isServerBusy=true，清除会导致弹窗显示 undefined
+        if (_forcePayDialogCalled || state.orderCreated) { clearInterval(tid); return; }
         walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
           const data = getVMData(vm, ver);
           if (data.isServerBusy === true) {

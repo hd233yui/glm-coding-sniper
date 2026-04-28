@@ -199,8 +199,9 @@
         log(`[探测] 所有已配置套餐均售罄 (${configuredKeys.join(', ')})，停止抢购`);
         confirmSoldOut();
       } else if (currentPlanSoldOut === true) {
-        log(`[探测] 当前套餐 ${currentKey} 售罄，触发候补切换...`);
-        tryNextPlan();
+        // 服务端明确确认售罄，直接停止，无需等候补机制走完 3 轮
+        log(`[探测] 服务端确认 ${currentKey} 售罄，停止抢购`);
+        confirmSoldOut();
       } else if (currentPlanSoldOut === false) {
         log(`[探测] 服务端确认 ${currentKey} 有货，继续抢购`);
       } else {
@@ -469,11 +470,15 @@
               _capturedProductId = bodyObj.productId;
               log('[捕获] productId=' + _capturedProductId);
             } else if (bodyObj.productId !== _capturedProductId) {
-              log('[修正] productId 不符: ' + bodyObj.productId + ' → ' + _capturedProductId);
-              bodyObj.productId = _capturedProductId;
-              args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+              if (_forcePayDialogCalled || state.orderCreated) {
+                log('[跳过修正] 支付进行中，保留 productId=' + bodyObj.productId);
+              } else {
+                log('[修正] productId 不符: ' + bodyObj.productId + ' → ' + _capturedProductId);
+                bodyObj.productId = _capturedProductId;
+                args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+              }
             }
-          } else if (_capturedProductId) {
+          } else if (_capturedProductId && !_forcePayDialogCalled && !state.orderCreated) {
             bodyObj.productId = _capturedProductId;
             args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
             log('[注入] 已补充 productId=' + _capturedProductId);
@@ -598,11 +603,15 @@
               _capturedProductId = bodyObj.productId;
               log('[捕获] productId=' + _capturedProductId + ' (XHR)');
             } else if (bodyObj.productId !== _capturedProductId) {
-              log('[修正] productId 不符: ' + bodyObj.productId + ' → ' + _capturedProductId + ' (XHR)');
-              bodyObj.productId = _capturedProductId;
-              args[0] = JSON.stringify(bodyObj);
+              if (_forcePayDialogCalled || state.orderCreated) {
+                log('[跳过修正] 支付进行中，保留 productId=' + bodyObj.productId + ' (XHR)');
+              } else {
+                log('[修正] productId 不符: ' + bodyObj.productId + ' → ' + _capturedProductId + ' (XHR)');
+                bodyObj.productId = _capturedProductId;
+                args[0] = JSON.stringify(bodyObj);
+              }
             }
-          } else if (_capturedProductId) {
+          } else if (_capturedProductId && !_forcePayDialogCalled && !state.orderCreated) {
             bodyObj.productId = _capturedProductId;
             args[0] = JSON.stringify(bodyObj);
             log('[注入] 已补充 productId=' + _capturedProductId + ' (XHR)');
@@ -1220,6 +1229,8 @@
       if (++attempts > 30) { clearInterval(tid); return; }
       const vr = getVueRoot();
       if (!vr) return;
+      // 支付弹窗已打开后不再清除 isServerBusy，否则 555 响应后弹窗显示 undefined
+      if (_forcePayDialogCalled || state.orderCreated) { clearInterval(tid); return; }
       let patched = 0;
       walkVueTree(vr.root, vr.ver, 0, (vm, ver) => {
         const data = getVMData(vm, ver);
