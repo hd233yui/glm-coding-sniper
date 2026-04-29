@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
 
   const CONFIG = {
     // 套餐优先级列表，按顺序尝试；第一个为首选，后续为候补
@@ -167,10 +167,12 @@
     if (state.orderCreated || _confirmedSoldOut) return;
     log('[探测] 主动同步服务端 soldOut 状态...');
     try {
+      const probeHeaders = { 'Content-Type': 'application/json;charset=UTF-8', 'accept': 'application/json, text/plain, */*' };
+      if (_capturedAuthHeader) probeHeaders['Authorization'] = _capturedAuthHeader;
       const resp = await originalFetch(location.origin + '/api/biz/pay/batch-preview', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json;charset=UTF-8', 'accept': 'application/json, text/plain, */*' },
+        headers: probeHeaders,
         body: '{}',
       });
       if (!resp.ok) { log(`[探测] HTTP ${resp.status}，跳过`); return; }
@@ -208,6 +210,38 @@
         log(`[探测] 未找到当前套餐 ${currentKey} 的数据，忽略`);
       }
     } catch (e) { log(`[探测] 异常: ${e.message}`); }
+  }
+
+  // 在 9:55 主动获取并缓存 productId（高峰期 API 返回 555，必须提前获取）
+  function schedulePrefetchProductId() {
+    if (_capturedProductId) return;
+    var now = new Date();
+    var prefetch = new Date(now);
+    prefetch.setHours(CONFIG.targetHour, CONFIG.targetMinute - 5, 0, 0); // 9:55:00
+    var ms = prefetch - now;
+
+    var doPrefetch = function() {
+      if (_capturedProductId) return;
+      log('[预获取] 开始每 10s 获取 productId，直到成功或 9:59:50 刷新...');
+      var attempt = 0;
+      var timer = setInterval(async function() {
+        if (_capturedProductId) { clearInterval(timer); return; }
+        var now = new Date();
+        var stopAt = new Date(now);
+        stopAt.setHours(CONFIG.targetHour, CONFIG.targetMinute - 1, 40, 0);
+        if (now >= stopAt) { clearInterval(timer); return; }
+        log('[预获取] 第 ' + (++attempt) + ' 次尝试...');
+        await fetchProductIdDirectly();
+      }, 10000);
+      fetchProductIdDirectly();
+    };
+
+    if (ms <= 0) {
+      doPrefetch();
+    } else {
+      setTimeout(doPrefetch, ms);
+      log('[预获取] 将在 ' + Math.round(ms / 1000) + 's 后（9:55）获取 productId');
+    }
   }
 
   function scheduleWindowEnd() {
@@ -283,6 +317,8 @@
   // Lite: monthlyOriginalAmount=49, Pro: =149, Max: =469
   // monthly: 无折扣, quarterly: campaignName含"包季", yearly: 含"包年"
   let _allProductIds = {};
+  let _productInfoCandidates = {}; // productinfo API 返回的平铺 key→productId 候选表
+  let _capturedAuthHeader = null; // 从页面请求中捕获的 Authorization 头
   const PLAN_PRICE_MAP = { lite: 49, pro: 149, max: 469 };
   // 价格范围兜底：当 monthlyOriginalAmount 为折后价时精确匹配会失败，用范围兜底
   // 三档之间差距足够大，范围不会重叠，即使打折也安全
@@ -341,6 +377,25 @@
     return { plan, period };
   }
 
+  function getProductIdFromCandidates() {
+    if (!Object.keys(_productInfoCandidates).length) return null;
+    const plan = currentPlan(), period = currentPeriod();
+    const promoKeys = ['newUserPurchase', 'CCFold', 'newUser', 'fold', 'promo', 'trial'];
+    const entries = Object.entries(_productInfoCandidates);
+    for (const [k, pid] of entries) {
+      const kl = k.toLowerCase();
+      if ((kl.includes(plan) || kl.includes(period)) && !promoKeys.some(p => kl.includes(p.toLowerCase()))) {
+        log('[候选] key="' + k + '" 命中套餐关键词 → productId=' + pid);
+        return pid;
+      }
+    }
+    const filtered = entries.filter(([k]) => !promoKeys.some(p => k.toLowerCase().includes(p.toLowerCase())));
+    if (filtered.length === 1) { log('[候选] 唯一非促销候选: ' + filtered[0][0] + '→' + filtered[0][1]); return filtered[0][1]; }
+    if (filtered.length > 1) { log('[候选] 多个非促销候选: [' + filtered.map(([k,v])=>k+'→'+v).join(', ') + ']，使用第一个'); return filtered[0][1]; }
+    log('[候选] 仅有促销类候选，兜底使用: ' + entries[0][0] + '→' + entries[0][1]);
+    return entries[0][1];
+  }
+
   function captureProductIdFromData(obj) {
     if (!obj || typeof obj !== 'object') return;
     if (obj.productList && Array.isArray(obj.productList)) {
@@ -374,6 +429,27 @@
       }
       return;
     }
+    // 检测 productinfo API 平铺 key→productId 结构
+    const pidPattern = /^product-[a-z0-9]+$/i;
+    const flatPidEntries = Object.entries(obj).filter(([, v]) => typeof v === 'string' && pidPattern.test(v));
+    if (flatPidEntries.length >= 2) {
+      let newCandidates = false;
+      for (const [k, pid] of flatPidEntries) {
+        if (!_productInfoCandidates[k]) { _productInfoCandidates[k] = pid; newCandidates = true; }
+      }
+      if (newCandidates) {
+        log('[productinfo] 捕获候选表: ' + flatPidEntries.map(([k,v])=>k+'→'+v).join(', '));
+        if (!_capturedProductId) {
+          const pid = getProductIdFromCandidates();
+          if (pid) {
+            _capturedProductId = pid;
+            log('[productinfo] 已设定 productId=' + pid + '（来自候选表）');
+            try { localStorage.setItem('glm_sniper_pid', JSON.stringify({ id: pid, plan: currentPlan(), period: currentPeriod(), ts: Date.now() })); } catch (e) {}
+          }
+        }
+      }
+      return;
+    }
     if (Array.isArray(obj)) {
       for (const item of obj) { if (item && typeof item === 'object') captureProductIdFromData(item); }
     } else {
@@ -398,6 +474,13 @@
     }
     if (Object.keys(_allProductIds).length > 0) {
       log('[警告] 已捕获产品但无法匹配 ' + currentPlan() + '/' + currentPeriod() + '，拒绝回退');
+    }
+    // productinfo 候选表回退
+    const candidate = getProductIdFromCandidates();
+    if (candidate) {
+      _capturedProductId = candidate;
+      log('[回退] 从 productinfo 候选表获取 productId=' + candidate);
+      return _capturedProductId;
     }
     try {
       const saved = JSON.parse(localStorage.getItem('glm_sniper_pid') || 'null');
@@ -460,6 +543,15 @@
 
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
 
+    // 捕获页面发出的 Authorization 头（页面 Axios 拦截器自动注入，脚本直接发请求时需要带上）
+    if (!_capturedAuthHeader && args[1]?.headers) {
+      try {
+        const h = new Headers(args[1].headers);
+        const auth = h.get('Authorization') || h.get('authorization');
+        if (auth) { _capturedAuthHeader = auth; }
+      } catch (e) {}
+    }
+
     // preview 请求: 捕获 productId + 注入缺失的 productId
     if (/preview/i.test(url) && args[1]?.body) {
       try {
@@ -478,10 +570,14 @@
                 args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
               }
             }
-          } else if (_capturedProductId && !_forcePayDialogCalled && !state.orderCreated) {
-            bodyObj.productId = _capturedProductId;
-            args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
-            log('[注入] 已补充 productId=' + _capturedProductId);
+          } else if (!_forcePayDialogCalled && !state.orderCreated) {
+            const pid = _capturedProductId || getProductIdFromCandidates();
+            if (pid) {
+              bodyObj.productId = pid;
+              args[1] = { ...args[1], body: JSON.stringify(bodyObj) };
+              if (pid !== _capturedProductId) log('[注入] 使用 productinfo 候选 productId=' + pid + '（请确认套餐是否正确）');
+              else log('[注入] 已补充 productId=' + pid);
+            }
           }
         }
       } catch (e) {}
@@ -590,6 +686,14 @@
     return _xhrOpen.call(this, method, url, ...rest);
   };
 
+  const _xhrSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+  XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+    if (!_capturedAuthHeader && /^authorization$/i.test(name) && value) {
+      _capturedAuthHeader = value;
+    }
+    return _xhrSetHeader.call(this, name, value);
+  };
+
   XMLHttpRequest.prototype.send = function (...args) {
     const url = this._sniperUrl || '';
 
@@ -611,10 +715,14 @@
                 args[0] = JSON.stringify(bodyObj);
               }
             }
-          } else if (_capturedProductId && !_forcePayDialogCalled && !state.orderCreated) {
-            bodyObj.productId = _capturedProductId;
-            args[0] = JSON.stringify(bodyObj);
-            log('[注入] 已补充 productId=' + _capturedProductId + ' (XHR)');
+          } else if (!_forcePayDialogCalled && !state.orderCreated) {
+            const pid = _capturedProductId || getProductIdFromCandidates();
+            if (pid) {
+              bodyObj.productId = pid;
+              args[0] = JSON.stringify(bodyObj);
+              if (pid !== _capturedProductId) log('[注入] 使用 productinfo 候选 productId=' + pid + '（请确认套餐是否正确）(XHR)');
+              else log('[注入] 已补充 productId=' + pid + ' (XHR)');
+            }
           }
         }
       } catch (e) {}
@@ -876,15 +984,19 @@
 
   async function fetchProductIdDirectly() {
     if (_capturedProductId) return true;
+    if (!_capturedAuthHeader) {
+      log('[主动获取] Authorization 头未就绪，跳过（等待页面初始化）');
+      return false;
+    }
     log('[主动获取] 尝试直接调用产品列表 API...');
     try {
+      const authHeaders = _capturedAuthHeader
+        ? { 'Content-Type': 'application/json;charset=UTF-8', 'accept': 'application/json, text/plain, */*', 'Authorization': _capturedAuthHeader }
+        : { 'Content-Type': 'application/json;charset=UTF-8', 'accept': 'application/json, text/plain, */*' };
       const resp = await _fetch(location.origin + '/api/biz/pay/batch-preview', {
         method: 'POST',
         credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json;charset=UTF-8',
-          'accept': 'application/json, text/plain, */*',
-        },
+        headers: authHeaders,
         body: '{}',
       });
       if (resp.ok) {
@@ -896,7 +1008,20 @@
         }
       }
     } catch (e) {}
-    log('[主动获取] batch-preview 无响应或未匹配到目标套餐');
+    // batch-preview 失败（如 555），尝试 productinfo API 作为兜底
+    log('[主动获取] batch-preview 失败，尝试 productinfo API...');
+    try {
+      const authHeaders2 = { 'Content-Type': 'application/json;charset=UTF-8', 'accept': 'application/json, text/plain, */*', 'Authorization': _capturedAuthHeader };
+      const resp2 = await _fetch(location.origin + '/api/biz/pay/productinfo', {
+        method: 'GET', credentials: 'include', headers: authHeaders2,
+      });
+      if (resp2.ok) {
+        const data2 = await resp2.json();
+        captureProductIdFromData(data2?.data || data2);
+        if (_capturedProductId) { log('[主动获取] productinfo 成功: productId=' + _capturedProductId); return true; }
+      }
+    } catch (e) {}
+    log('[主动获取] 所有 API 均未返回匹配的 productId');
     return false;
   }
 
@@ -925,13 +1050,11 @@
         // 降级：主动调用产品 API 获取
         log('主动获取 productId...');
         setStatus('主动获取 productId...', '#fc0');
-        const fetched = await fetchProductIdDirectly();
-        if (!fetched) {
-          log('警告: productId 获取失败，强行继续（请求可能报错）');
-          setStatus('productId 未获取，强行继续...', '#f80');
-        }
+        await fetchProductIdDirectly();
+        // 无论是否成功，进入点击循环——循环内会检查 productId，未获取时跳过点击
       }
     }
+    var _waitingForPid = false;
     state.timerId = setInterval(() => {
       if (_confirmedSoldOut) {
         clearInterval(state.timerId);
@@ -953,6 +1076,16 @@
         setStatus('等待页面恢复...', '#fc0');
         return;
       }
+      // productId 未就绪：不点击购买按钮（避免触发验证码），等待后台获取
+      if (!_capturedProductId) {
+        if (!_waitingForPid) {
+          _waitingForPid = true;
+          log('productId 未就绪，暂停点击，等待后台获取...');
+          setStatus('等待 productId...', '#fc0');
+        }
+        return; // 不消耗重试次数
+      }
+      _waitingForPid = false;
       state.retryCount++;
       if (state.retryCount % 10 === 1) {
         log('第 ' + state.retryCount + ' 次尝试...');
@@ -1277,6 +1410,7 @@
     }
   } catch (e) {}
   scheduleWindowEnd();
+  schedulePrefetchProductId();
   var planList = CONFIG.planPriority.map(function(p, i) { return (i === 0 ? '首选' : '候补' + i) + ': ' + p.plan + '/' + p.billingPeriod; }).join('，');
   log('脚本已启动 - ' + planList);
   log('到 ' + CONFIG.targetHour + ':00 自动抢购');
@@ -1285,9 +1419,12 @@
   setStatus('等待中...', '#aaa');
 
   // 定期检查 productId 是否已捕获
+  // 每 3s 检查内存/localStorage；每 15s 额外发一次主动 fetch
+  let _pidFetchTick = 0;
   const pidTimer = setInterval(() => {
     if (_capturedProductId) { clearInterval(pidTimer); return; }
-    getProductId();
+    if (getProductId()) { clearInterval(pidTimer); return; }
+    if (++_pidFetchTick % 2 === 0) fetchProductIdDirectly(); // 每 2 次 = 6s 发一次主动请求
   }, 3000);
 
   // 如果现在刚好是10:00
