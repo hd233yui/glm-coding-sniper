@@ -762,6 +762,7 @@
           foundRealModal = true;
           if (!state.modalVisible) {
             state.modalVisible = true;
+            _lastModalType = isCaptcha ? 'captcha' : 'payment';
             log('检测到' + (isCaptcha ? '验证码' : '支付') + '弹窗，已冻结刷新');
             setStatus('请完成验证码 / 扫码支付!', '#fc0');
             playBeep();
@@ -771,11 +772,39 @@
       }
       if (!foundRealModal && state.modalVisible) {
         state.modalVisible = false;
+        const dismissedType = _lastModalType;
+        _lastModalType = null;
         log('弹窗已消失，恢复自动抢购');
         setTimeout(() => {
           selectBilling();
           ensureProductId();
         }, 500);
+        if (dismissedType === 'captcha' && !state.orderCreated && isInPurchaseTime()) {
+          if (_postCaptchaRetryTimer) clearTimeout(_postCaptchaRetryTimer);
+          _postCaptchaRetryTimer = setTimeout(async () => {
+            _postCaptchaRetryTimer = null;
+            if (state.orderCreated || state.modalVisible || _confirmedSoldOut) return;
+            log('[验证码后] 支付弹窗未出现，先重新获取 productId...');
+            setStatus('重新获取 productId...', '#fc0');
+            _capturedProductId = null;
+            await fetchProductIdDirectly();
+            await new Promise(r => setTimeout(r, 1000));
+            if (state.orderCreated || state.modalVisible || _confirmedSoldOut) return;
+            if (!_capturedProductId) {
+              log('[验证码后] productId 仍未获取到，放弃本轮自动重试（请手动点击购买）');
+              setStatus('productId 未就绪，请手动重试', '#f80');
+              return;
+            }
+            log('[验证码后] productId 就绪，重新触发购买...');
+            setStatus('重新触发购买...', '#fc0');
+            if (state.timerId) { clearInterval(state.timerId); state.timerId = null; }
+            state.isRunning = false;
+            state.retryCount = 0;
+            _forcePayDialogCalled = false;
+            state.isRunning = true;
+            startSnipe();
+          }, 4000);
+        }
       }
     }).observe(document.body, { childList: true, subtree: true });
   }
@@ -1162,10 +1191,8 @@
         if (words.some(k => t.includes(k))) {
           fire(btn);
           log('点击确认: ' + t);
-          state.orderCreated = true;
-          setStatus('订单已创建! 快扫码!', '#0f8');
-          playBeep();
-          setTimeout(forcePayDialog, 1500);
+          setStatus('已点击确认，等待支付弹窗...', '#fc0');
+          setTimeout(forcePayDialog, 2000);
           return;
         }
       }
@@ -1192,14 +1219,23 @@
                         n.closest?.('[class*="modal"],[class*="dialog"],[role="dialog"]');
         const t = n.textContent || '';
         const hasPayText = t.includes('扫码') || t.includes('支付宝') || t.includes('微信支付');
-        if (hasQR || (isModal && hasPayText)) {
+        if (hasQR) {
           log('支付二维码出现!');
           setStatus('快扫码支付!', '#0f8');
           state.orderCreated = true;
+          if (_postCaptchaRetryTimer) { clearTimeout(_postCaptchaRetryTimer); _postCaptchaRetryTimer = null; }
           clearInterval(state.timerId);
+          state.timerId = null;
           playBeep();
           notify('GLM 抢购成功！', '支付二维码已出现，快去扫码！');
           setTimeout(forcePayDialog, 1500);
+        } else if (isModal && hasPayText) {
+          log('检测到支付弹窗（QR 尚未加载）');
+          setStatus('支付弹窗已出现，等待二维码...', '#fc0');
+          state.orderCreated = true;
+          if (_postCaptchaRetryTimer) { clearTimeout(_postCaptchaRetryTimer); _postCaptchaRetryTimer = null; }
+          clearInterval(state.timerId);
+          state.timerId = null;
         }
       }
     }
@@ -1333,6 +1369,8 @@
 
   // Fix 5: 防止 forcePayDialog 在用户关闭后 1.5s 又重新打开
   var _forcePayDialogCalled = false;
+  var _lastModalType = null;
+  var _postCaptchaRetryTimer = null;
 
   // 抢购成功后，如果支付弹窗没自动弹出，直接操作 Vue 组件
   function forcePayDialog() {

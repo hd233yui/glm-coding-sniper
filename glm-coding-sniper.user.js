@@ -889,6 +889,7 @@
             foundRealModal = true;
             if (!state.modalVisible) {
               state.modalVisible = true;
+              _lastModalType = isCaptcha ? 'captcha' : 'payment';
               const type = isCaptcha ? '验证码' : '支付';
               console.log(`[GLM Sniper] 检测到${type}弹窗! 冻结刷新`);
               log(`检测到${type}弹窗，已冻结刷新`);
@@ -901,6 +902,8 @@
         // 没有真正的弹窗了
         if (!foundRealModal && state.modalVisible) {
           state.modalVisible = false;
+          const dismissedType = _lastModalType;
+          _lastModalType = null;
           console.log('[GLM Sniper] 弹窗已消失，恢复正常');
           log('弹窗已消失，恢复自动抢购');
           // 验证码完成后重新选择计费周期，防止产品数据丢失导致 productId 为空
@@ -908,6 +911,36 @@
             selectBillingPeriod();
             ensureProductId();
           }, 500);
+          // 验证码弹窗关闭后，等4s检查支付弹窗是否出现；若未出现则重新触发购买流程
+          if (dismissedType === 'captcha' && !state.orderCreated && isInPurchaseTime()) {
+            if (_postCaptchaRetryTimer) clearTimeout(_postCaptchaRetryTimer);
+            _postCaptchaRetryTimer = setTimeout(async () => {
+              _postCaptchaRetryTimer = null;
+              if (state.orderCreated || state.modalVisible || _confirmedSoldOut) return;
+              // 第一步：先重新 fetch 正确的 productId（避免用错误候选再次提交）
+              log('[验证码后] 支付弹窗未出现，先重新获取 productId...');
+              setStatus('重新获取 productId...', '#ffcc00');
+              _capturedProductId = null; // 清掉可能错误的候选值，强制重新匹配
+              await fetchProductIdDirectly();
+              // 等 1s，看页面是否自动刷新状态后弹出支付窗
+              await new Promise(r => setTimeout(r, 1000));
+              if (state.orderCreated || state.modalVisible || _confirmedSoldOut) return;
+              if (!_capturedProductId) {
+                log('[验证码后] productId 仍未获取到，放弃本轮自动重试（请手动点击购买）');
+                setStatus('productId 未就绪，请手动重试', '#ff8800');
+                return;
+              }
+              // 第二步：productId 已就绪，重新触发购买
+              log('[验证码后] productId 就绪，重新触发购买...');
+              setStatus('重新触发购买...', '#ffcc00');
+              if (state.timerId) { clearInterval(state.timerId); state.timerId = null; }
+              state.isRunning = false;
+              state.retryCount = 0;
+              _forcePayDialogCalled = false;
+              state.isRunning = true;
+              startSnipe();
+            }, 4000);
+          }
         }
       }).observe(document.body, { childList: true, subtree: true });
     }
@@ -1493,10 +1526,10 @@
             btn.click();
             btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             log(`点击确认按钮: "${text}"`);
-            state.orderCreated = true;
-            setStatus('订单已创建! 请扫码支付', '#00ff88');
+            setStatus('已点击确认，等待支付弹窗...', '#ffcc00');
+            // 不在此处设 orderCreated=true，等实际支付弹窗/QR 出现后再设
             // 延迟检查支付弹窗是否弹出，没有则直接操作 Vue
-            setTimeout(forcePayDialog, 1500);
+            setTimeout(forcePayDialog, 2000);
             return true;
           }
         }
@@ -1531,14 +1564,25 @@
               const text = node.textContent || '';
               const hasPayText = text.includes('扫码') || text.includes('支付宝') || text.includes('微信支付');
 
-              if (hasQR || (isModal && hasPayText)) {
+              if (hasQR) {
+                // 真正检测到二维码图像才通知
                 log('检测到支付二维码!');
                 setStatus('支付二维码已出现! 快扫码!', '#00ff88');
                 state.orderCreated = true;
+                if (_postCaptchaRetryTimer) { clearTimeout(_postCaptchaRetryTimer); _postCaptchaRetryTimer = null; }
                 clearInterval(state.timerId);
+                state.timerId = null;
                 playAlert();
                 notify('GLM 抢购成功！', '支付二维码已出现，快去扫码！');
                 setTimeout(forcePayDialog, 1500);
+              } else if (isModal && hasPayText) {
+                // 支付弹窗出现但 QR 尚未加载，先停止点击，等 QR
+                log('检测到支付弹窗（QR 尚未加载）');
+                setStatus('支付弹窗已出现，等待二维码...', '#ffcc00');
+                state.orderCreated = true; // 停止重复点击购买按钮
+                if (_postCaptchaRetryTimer) { clearTimeout(_postCaptchaRetryTimer); _postCaptchaRetryTimer = null; }
+                clearInterval(state.timerId);
+                state.timerId = null;
               }
             }
           }
@@ -1786,6 +1830,10 @@
 
     // Fix 5: 防止 forcePayDialog 在用户关闭弹窗后 1.5s 又重新打开
     let _forcePayDialogCalled = false;
+    // 记录上一次弹窗类型（captcha / payment），用于弹窗消失后决定是否重试购买
+    let _lastModalType = null;
+    // 防止验证码后重试购买时重复触发
+    let _postCaptchaRetryTimer = null;
 
     // 抢购成功后，如果支付弹窗没自动弹出，直接操作 Vue 组件
     function forcePayDialog() {
