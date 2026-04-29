@@ -169,7 +169,7 @@
     try {
       const probeHeaders = { 'Content-Type': 'application/json;charset=UTF-8', 'accept': 'application/json, text/plain, */*' };
       if (_capturedAuthHeader) probeHeaders['Authorization'] = _capturedAuthHeader;
-      const resp = await originalFetch(location.origin + '/api/biz/pay/batch-preview', {
+      const resp = await _fetch(location.origin + '/api/biz/pay/batch-preview', {
         method: 'POST',
         credentials: 'include',
         headers: probeHeaders,
